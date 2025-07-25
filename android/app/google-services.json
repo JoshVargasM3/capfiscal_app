@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "518204584684",
+    "project_id": "capfiscal-biblioteca-app",
+    "storage_bucket": "capfiscal-biblioteca-app.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:518204584684:android:c408b90d0cedb628396bc9",
+        "android_client_info": {
+          "package_name": "com.capfiscal.biblioteca"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyA4ilzkQtfMT8oZW-b1JUYKXt65E9IDYPo"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
