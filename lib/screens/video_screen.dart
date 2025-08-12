@@ -83,7 +83,6 @@ class _VideoScreenState extends State<VideoScreen> {
           enableCaption: true,
           strictRelatedVideos: true,
           showControls: true,
-          // mute: true, // si lo necesitas
         ),
       );
     } else {
@@ -287,24 +286,10 @@ class _VideoScreenState extends State<VideoScreen> {
           );
         },
       ),
-      bottomNavigationBar: CapfiscalBottomNav(
+      // 👉 Usa la navegación por defecto del bottom nav
+      // ['/biblioteca', '/video', '/home', '/chat']
+      bottomNavigationBar: const CapfiscalBottomNav(
         currentIndex: 1,
-        onTap: (i) {
-          switch (i) {
-            case 0:
-              Navigator.pushReplacementNamed(context, '/biblioteca');
-              break;
-            case 1:
-              // ya estás en videos
-              break;
-            case 2:
-              Navigator.pushReplacementNamed(context, '/biblioteca'); // home?
-              break;
-            case 3:
-              Navigator.pushReplacementNamed(context, '/chat');
-              break;
-          }
-        },
       ),
     );
   }

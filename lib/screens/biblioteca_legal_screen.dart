@@ -40,10 +40,32 @@ class _BibliotecaLegalScreenState extends State<BibliotecaLegalScreen> {
     'Requisición'
   ];
 
+  bool _appliedRouteQuery =
+      false; // para aplicar argumentos de búsqueda una sola vez
+
   @override
   void initState() {
     super.initState();
     _fetchFiles();
+  }
+
+  // Si vienes desde Home con arguments: {'query': '...'} lo aplicamos 1 sola vez
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    if (_appliedRouteQuery) return;
+    final args = ModalRoute.of(context)?.settings.arguments;
+    if (args is Map &&
+        args['query'] is String &&
+        (args['query'] as String).isNotEmpty) {
+      setState(() {
+        _search = (args['query'] as String).trim();
+        _activeCategory = '';
+        _appliedRouteQuery = true;
+      });
+    } else {
+      _appliedRouteQuery = true;
+    }
   }
 
   Future<void> _fetchFiles() async {
@@ -81,8 +103,9 @@ class _BibliotecaLegalScreenState extends State<BibliotecaLegalScreen> {
     return _files.where((f) {
       final name = f.name.toLowerCase();
       if (_search.isNotEmpty) return name.contains(_search.toLowerCase());
-      if (_activeCategory.isNotEmpty)
+      if (_activeCategory.isNotEmpty) {
         return name.contains(_activeCategory.toLowerCase());
+      }
       return true;
     }).toList();
   }
@@ -120,7 +143,6 @@ class _BibliotecaLegalScreenState extends State<BibliotecaLegalScreen> {
         onMenu: () => _scaffoldKey.currentState?.openDrawer(),
         onRefresh: _fetchFiles,
         onProfile: () => Navigator.of(context).pushNamed('/perfil'),
-        // logoAsset: 'assets/capfiscal_logo.png', // cambia el nombre si tu asset difiere
       ),
 
       body: Column(
@@ -278,26 +300,10 @@ class _BibliotecaLegalScreenState extends State<BibliotecaLegalScreen> {
       ),
 
       // === BOTTOM NAV estilo mockup ===
-      bottomNavigationBar: CapfiscalBottomNav(
+      // 👉 Deja SIN onTap para usar la navegación por defecto:
+      // ['/biblioteca', '/video', '/home', '/chat']
+      bottomNavigationBar: const CapfiscalBottomNav(
         currentIndex: 0, // Biblioteca
-        onTap: (i) {
-          switch (i) {
-            case 0: // Biblioteca
-              if (ModalRoute.of(context)?.settings.name != '/biblioteca') {
-                Navigator.pushReplacementNamed(context, '/biblioteca');
-              }
-              break;
-            case 1: // Videos
-              Navigator.pushReplacementNamed(context, '/video');
-              break;
-            case 2: // Home (ajusta si tienes ruta real de home)
-              Navigator.pushReplacementNamed(context, '/biblioteca');
-              break;
-            case 3: // Chat
-              Navigator.pushReplacementNamed(context, '/chat');
-              break;
-          }
-        },
       ),
     );
   }

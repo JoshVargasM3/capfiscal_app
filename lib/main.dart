@@ -6,6 +6,7 @@ import 'firebase_options.dart';
 // Screens
 import 'screens/auth_gate.dart';
 import 'screens/login_screen.dart';
+import 'screens/home_screen.dart';
 import 'screens/biblioteca_legal_screen.dart';
 import 'screens/video_screen.dart';
 import 'screens/chat.dart';
@@ -27,12 +28,14 @@ class MyApp extends StatelessWidget {
     return MaterialApp(
       debugShowCheckedModeBanner: false,
 
-      // 👇 Iniciamos con el AuthGate: si hay sesión -> app, si no -> Login
+      // Punto de entrada: si hay sesión -> Home (o lo que devuelva AuthGate),
+      // si no -> Login. AuthGate se encarga de decidir.
       home: const AuthGate(),
 
-      // Rutas nombradas que usa tu app
+      // Rutas nombradas usadas por la app
       routes: {
         '/login': (context) => const LoginScreen(),
+        '/home': (context) => const HomeScreen(),
         '/biblioteca': (context) => const BibliotecaLegalScreen(),
         '/video': (context) => const VideoScreen(),
         '/chat': (context) => const ChatScreen(),

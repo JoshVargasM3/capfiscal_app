@@ -1,6 +1,8 @@
+// lib/screens/auth_gate.dart
 import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
-import 'biblioteca_legal_screen.dart';
+
+import 'home_screen.dart'; // 👈 importa Home
 import 'login_screen.dart';
 
 class AuthGate extends StatelessWidget {
@@ -17,9 +19,11 @@ class AuthGate extends StatelessWidget {
           );
         }
         if (snap.data != null) {
-          return const BibliotecaLegalScreen(); // logueado
+          // Usuario logueado -> Home
+          return const HomeScreen();
         }
-        return const LoginScreen(); // no logueado
+        // No logueado -> Login
+        return const LoginScreen();
       },
     );
   }

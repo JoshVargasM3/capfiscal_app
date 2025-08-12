@@ -26,6 +26,27 @@ class _ChatScreenState extends State<ChatScreen> {
 
   static const _brand = Color(0xFF6B1A1A);
 
+  @override
+  void initState() {
+    super.initState();
+    // Al entrar, baja al final
+    WidgetsBinding.instance.addPostFrameCallback((_) => _jumpToEnd());
+  }
+
+  void _jumpToEnd() {
+    if (!_scrollCtrl.hasClients) return;
+    _scrollCtrl.jumpTo(_scrollCtrl.position.maxScrollExtent);
+  }
+
+  void _animateToEnd() {
+    if (!_scrollCtrl.hasClients) return;
+    _scrollCtrl.animateTo(
+      _scrollCtrl.position.maxScrollExtent + 60,
+      duration: const Duration(milliseconds: 300),
+      curve: Curves.easeOut,
+    );
+  }
+
   void _sendMessage() {
     final txt = _textCtrl.text.trim();
     if (txt.isEmpty) return;
@@ -36,15 +57,7 @@ class _ChatScreenState extends State<ChatScreen> {
     });
 
     // Desplaza la lista al final para ver el mensaje nuevo
-    Future.delayed(const Duration(milliseconds: 100), () {
-      if (_scrollCtrl.hasClients) {
-        _scrollCtrl.animateTo(
-          _scrollCtrl.position.maxScrollExtent + 60,
-          duration: const Duration(milliseconds: 300),
-          curve: Curves.easeOut,
-        );
-      }
-    });
+    Future.delayed(const Duration(milliseconds: 80), _animateToEnd);
   }
 
   @override
@@ -178,26 +191,10 @@ class _ChatScreenState extends State<ChatScreen> {
         ],
       ),
 
-      // Bottom nav unificado
-      bottomNavigationBar: CapfiscalBottomNav(
+      // Bottom nav unificado — usa la navegación por defecto:
+      // ['/biblioteca', '/video', '/home', '/chat']
+      bottomNavigationBar: const CapfiscalBottomNav(
         currentIndex: 3, // Chat
-        onTap: (i) {
-          switch (i) {
-            case 0:
-              Navigator.pushReplacementNamed(context, '/biblioteca');
-              break;
-            case 1:
-              Navigator.pushReplacementNamed(context, '/video');
-              break;
-            case 2:
-              // Si tienes Home, ve a Home. De momento regresamos a biblioteca.
-              Navigator.pushReplacementNamed(context, '/biblioteca');
-              break;
-            case 3:
-              // Ya estás en chat
-              break;
-          }
-        },
       ),
     );
   }

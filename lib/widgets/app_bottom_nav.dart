@@ -1,20 +1,30 @@
+// lib/widgets/app_bottom_nav.dart
 import 'package:flutter/material.dart';
 
 class CapfiscalBottomNav extends StatelessWidget {
   const CapfiscalBottomNav({
     super.key,
     required this.currentIndex,
-    required this.onTap,
+    this.onTap, // si lo dejas null, se usa la navegación por defecto
     this.background = const Color(0xFFEDEAEA), // gris claro del mockup
     this.activeColor = const Color(0xFF6B1A1A), // borgoña
     this.inactiveColor = const Color(0xFF6B1A1A),
   });
 
   final int currentIndex;
-  final ValueChanged<int> onTap;
+  final ValueChanged<int>? onTap;
   final Color background;
   final Color activeColor;
   final Color inactiveColor;
+
+  void _defaultNavigate(BuildContext context, int i) {
+    final routes = const ['/biblioteca', '/video', '/home', '/chat'];
+    final target = routes[i];
+    final current = ModalRoute.of(context)?.settings.name;
+
+    if (current == target) return;
+    Navigator.pushReplacementNamed(context, target);
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -35,7 +45,8 @@ class CapfiscalBottomNav extends StatelessWidget {
               icon: Icons.menu_book_rounded, // Biblioteca
               index: 0,
               currentIndex: currentIndex,
-              onTap: onTap,
+              onPressed: (i) =>
+                  onTap != null ? onTap!(i) : _defaultNavigate(context, i),
               activeColor: activeColor,
               inactiveColor: inactiveColor,
             ),
@@ -43,7 +54,8 @@ class CapfiscalBottomNav extends StatelessWidget {
               icon: Icons.ondemand_video_rounded, // Videos
               index: 1,
               currentIndex: currentIndex,
-              onTap: onTap,
+              onPressed: (i) =>
+                  onTap != null ? onTap!(i) : _defaultNavigate(context, i),
               activeColor: activeColor,
               inactiveColor: inactiveColor,
             ),
@@ -51,7 +63,8 @@ class CapfiscalBottomNav extends StatelessWidget {
               icon: Icons.home_rounded, // Home
               index: 2,
               currentIndex: currentIndex,
-              onTap: onTap,
+              onPressed: (i) =>
+                  onTap != null ? onTap!(i) : _defaultNavigate(context, i),
               activeColor: activeColor,
               inactiveColor: inactiveColor,
             ),
@@ -59,7 +72,8 @@ class CapfiscalBottomNav extends StatelessWidget {
               icon: Icons.chat_bubble_rounded, // Chat
               index: 3,
               currentIndex: currentIndex,
-              onTap: onTap,
+              onPressed: (i) =>
+                  onTap != null ? onTap!(i) : _defaultNavigate(context, i),
               activeColor: activeColor,
               inactiveColor: inactiveColor,
             ),
@@ -75,7 +89,7 @@ class _Item extends StatelessWidget {
     required this.icon,
     required this.index,
     required this.currentIndex,
-    required this.onTap,
+    required this.onPressed,
     required this.activeColor,
     required this.inactiveColor,
   });
@@ -83,7 +97,7 @@ class _Item extends StatelessWidget {
   final IconData icon;
   final int index;
   final int currentIndex;
-  final ValueChanged<int> onTap;
+  final ValueChanged<int> onPressed;
   final Color activeColor;
   final Color inactiveColor;
 
@@ -92,14 +106,14 @@ class _Item extends StatelessWidget {
     final bool active = index == currentIndex;
 
     return GestureDetector(
-      onTap: () => onTap(index),
+      onTap: () => onPressed(index),
       child: AnimatedContainer(
         duration: const Duration(milliseconds: 180),
         curve: Curves.easeOut,
         padding: const EdgeInsets.all(8),
         decoration: BoxDecoration(
           color: active ? activeColor : Colors.transparent,
-          borderRadius: BorderRadius.circular(14), // “píldora” del mockup
+          borderRadius: BorderRadius.circular(14), // píldora
         ),
         child: Icon(
           icon,

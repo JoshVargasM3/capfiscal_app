@@ -611,26 +611,9 @@ class _UserProfileScreenState extends State<UserProfileScreen> {
               ),
             ),
 
-      // Bottom nav (perfil es el índice 3 según tu app)
-      bottomNavigationBar: CapfiscalBottomNav(
-        currentIndex: 3,
-        onTap: (i) {
-          switch (i) {
-            case 0:
-              Navigator.pushReplacementNamed(context, '/biblioteca');
-              break;
-            case 1:
-              Navigator.pushReplacementNamed(context, '/video');
-              break;
-            case 2:
-              Navigator.pushReplacementNamed(
-                  context, '/biblioteca'); // si tienes home, cámbialo aquí
-              break;
-            case 3:
-              // ya estás en perfil
-              break;
-          }
-        },
+      // Bottom nav unificado — usa navegación por defecto: ['/biblioteca','/video','/home','/chat']
+      bottomNavigationBar: const CapfiscalBottomNav(
+        currentIndex: 3, // Perfil
       ),
     );
   }
