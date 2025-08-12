@@ -5,10 +5,13 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_storage/firebase_storage.dart';
 import 'package:image_picker/image_picker.dart';
+import 'package:path_provider/path_provider.dart';
+import 'package:open_filex/open_filex.dart';
 
 import '../widgets/app_top_bar.dart';
 import '../widgets/app_bottom_nav.dart';
 import '../widgets/custom_drawer.dart';
+import '../helpers/favorites_manager.dart';
 
 class UserProfileScreen extends StatefulWidget {
   const UserProfileScreen({super.key});
@@ -32,6 +35,11 @@ class _UserProfileScreenState extends State<UserProfileScreen> {
   bool _loading = true;
   bool _saving = false;
   bool _editing = false;
+
+  // Favoritos
+  bool _loadingFavs = true;
+  List<Reference> _favDocs = [];
+  List<_FavVideo> _favVideos = [];
 
   String? _photoUrl;
 
@@ -58,11 +66,17 @@ class _UserProfileScreenState extends State<UserProfileScreen> {
   // ------------------- DATA -------------------
 
   Future<void> _loadProfile() async {
-    setState(() => _loading = true);
+    setState(() {
+      _loading = true;
+      _loadingFavs = true;
+    });
     try {
       final user = _auth.currentUser;
       if (user == null) {
-        setState(() => _loading = false);
+        setState(() {
+          _loading = false;
+          _loadingFavs = false;
+        });
         return;
       }
       final snap = await _db.collection('users').doc(user.uid).get();
@@ -82,10 +96,78 @@ class _UserProfileScreenState extends State<UserProfileScreen> {
         if (start is Timestamp) _startDate = start.toDate();
         if (end is Timestamp) _endDate = end.toDate();
       }
+
+      // Carga favoritos en paralelo
+      await _loadFavorites();
     } catch (_) {
       // opcional: log
     } finally {
       if (mounted) setState(() => _loading = false);
+    }
+  }
+
+  Future<void> _loadFavorites() async {
+    try {
+      final favNames =
+          await FavoritesManager.getFavorites(); // Set<String> o List<String>
+      final favSet = favNames.toSet();
+
+      // --- Documentos favoritos (Storage raíz) ---
+      final root = await _storage.ref('/').listAll();
+      final docs =
+          root.items.where((ref) => favSet.contains(ref.name)).toList();
+
+      // --- Videos favoritos (Firestore 'videos') ---
+      final vSnap = await _db.collection('videos').get();
+      final List<_FavVideo> vids = [];
+      for (final d in vSnap.docs) {
+        final data = d.data();
+        final raw = (data['youtubeId'] ?? '').toString().trim();
+        final title = (data['title'] ?? '').toString().trim();
+        final desc = (data['description'] ?? '').toString().trim();
+        final id = _normalizeYouTubeId(raw);
+
+        // Coincidimos por tres posibles llaves: title, youtubeId (id) o docId
+        if (favSet.contains(title) ||
+            favSet.contains(id) ||
+            favSet.contains(d.id)) {
+          if (id.length == 11) {
+            vids.add(_FavVideo(
+              docId: d.id,
+              youtubeId: id,
+              title: title.isEmpty ? 'Video' : title,
+              description: desc,
+            ));
+          }
+        }
+      }
+
+      if (!mounted) return;
+      setState(() {
+        _favDocs = docs;
+        _favVideos = vids;
+        _loadingFavs = false;
+      });
+    } catch (_) {
+      if (!mounted) return;
+      setState(() => _loadingFavs = false);
+    }
+  }
+
+  // Descarga y abre archivo
+  Future<void> _downloadAndOpenFile(Reference ref) async {
+    try {
+      final dir = await getApplicationDocumentsDirectory();
+      final file = File('${dir.path}/${ref.name}');
+      if (!await file.exists()) {
+        await ref.writeToFile(file);
+      }
+      await OpenFilex.open(file.path);
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Error al abrir archivo: $e')),
+      );
     }
   }
 
@@ -152,7 +234,7 @@ class _UserProfileScreenState extends State<UserProfileScreen> {
 
     setState(() => _saving = true);
     try {
-      // 1) Si cambió el correo, intenta actualizarlo en Auth
+      // 1) Cambio de correo
       final currentEmail = user.email ?? '';
       final newEmail = _emailCtrl.text.trim();
       if (newEmail.isNotEmpty && newEmail != currentEmail) {
@@ -184,13 +266,13 @@ class _UserProfileScreenState extends State<UserProfileScreen> {
         }
       }
 
-      // 2) Actualiza displayName y photoURL en Auth
+      // 2) Actualiza displayName y photoURL
       await user.updateDisplayName(_nameCtrl.text.trim());
       if (_photoUrl != null && _photoUrl!.isNotEmpty) {
         await user.updatePhotoURL(_photoUrl);
       }
 
-      // 3) Guarda en Firestore (merge) + updatedAt
+      // 3) Guarda en Firestore
       await _db.collection('users').doc(user.uid).set({
         'name': _nameCtrl.text.trim(),
         'phone': _phoneCtrl.text.trim(),
@@ -280,8 +362,9 @@ class _UserProfileScreenState extends State<UserProfileScreen> {
     if (mounted) setState(() => _photoUrl = null);
   }
 
-  // --------- Acciones de cuenta: reset password, verificar, sign out ---------
+  // --------- Acciones de cuenta ---------
 
+  // ignore: unused_element
   Future<void> _sendPasswordReset() async {
     final email = _auth.currentUser?.email ?? _emailCtrl.text.trim();
     if (email.isEmpty) {
@@ -319,10 +402,10 @@ class _UserProfileScreenState extends State<UserProfileScreen> {
     }
   }
 
+  // ignore: unused_element
   Future<void> _signOut() async {
     await _auth.signOut();
     if (!mounted) return;
-    // AuthGate en main.dart te llevará a Login automáticamente
     Navigator.of(context).pushNamedAndRemoveUntil('/login', (route) => false);
   }
 
@@ -363,6 +446,42 @@ class _UserProfileScreenState extends State<UserProfileScreen> {
     final mm = d.month.toString().padLeft(2, '0');
     final yy = d.year.toString();
     return '$dd/$mm/$yy';
+  }
+
+  // Normaliza ID de YouTube desde url/shorts/watch/embed
+  String _normalizeYouTubeId(String raw) {
+    final v = raw.trim();
+    final idRe = RegExp(r'^[a-zA-Z0-9_-]{11}$');
+    if (idRe.hasMatch(v)) return v;
+
+    Uri? u;
+    try {
+      u = Uri.parse(v);
+    } catch (_) {
+      return v;
+    }
+
+    if (u.host.contains('youtu.be')) {
+      if (u.pathSegments.isNotEmpty && idRe.hasMatch(u.pathSegments.first)) {
+        return u.pathSegments.first;
+      }
+    }
+
+    if (u.host.contains('youtube.com')) {
+      final q = u.queryParameters['v'];
+      if (q != null && idRe.hasMatch(q)) return q;
+
+      final segs = u.pathSegments;
+      final i = segs.indexOf('shorts');
+      if (i >= 0 && i + 1 < segs.length && idRe.hasMatch(segs[i + 1])) {
+        return segs[i + 1];
+      }
+      final j = segs.indexOf('embed');
+      if (j >= 0 && j + 1 < segs.length && idRe.hasMatch(segs[j + 1])) {
+        return segs[j + 1];
+      }
+    }
+    return v;
   }
 
   @override
@@ -424,7 +543,7 @@ class _UserProfileScreenState extends State<UserProfileScreen> {
                     ),
                   ),
 
-                  // Banner de verificación de correo (si aplica)
+                  // Banner verificación
                   if (!isVerified)
                     Padding(
                       padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
@@ -446,7 +565,7 @@ class _UserProfileScreenState extends State<UserProfileScreen> {
                       ),
                     ),
 
-                  // Avatar + botón EDITAR (debajo, sin superponerse)
+                  // Avatar + botón EDITAR
                   Padding(
                     padding: const EdgeInsets.symmetric(vertical: 12),
                     child: Center(
@@ -580,38 +699,100 @@ class _UserProfileScreenState extends State<UserProfileScreen> {
                   _SubscriptionRow(
                       label: 'MÉTODO DE PAGO', value: _paymentMethod ?? '--'),
 
-                  // Acciones de cuenta
+                  // ================== MIS FAVORITOS ==================
                   Padding(
-                    padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
-                    child: Row(
-                      children: [
-                        Expanded(
-                          child: OutlinedButton.icon(
-                            onPressed: _sendPasswordReset,
-                            icon: const Icon(Icons.lock_reset),
-                            label: const Text('Restablecer contraseña'),
+                    padding: const EdgeInsets.fromLTRB(16, 16, 16, 6),
+                    child: Text(
+                      'MIS FAVORITOS',
+                      style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                            color: const Color(0xFF6B1A1A),
+                            fontWeight: FontWeight.w800,
                           ),
-                        ),
-                        const SizedBox(width: 12),
-                        Expanded(
-                          child: ElevatedButton.icon(
-                            style: ElevatedButton.styleFrom(
-                                backgroundColor: Colors.black87),
-                            onPressed: _signOut,
-                            icon: const Icon(Icons.logout),
-                            label: const Text('Cerrar sesión'),
-                          ),
-                        ),
-                      ],
                     ),
                   ),
+
+                  if (_loadingFavs)
+                    const Padding(
+                      padding: EdgeInsets.all(16),
+                      child: Center(child: CircularProgressIndicator()),
+                    )
+                  else ...[
+                    // ---- Documentos favoritos ----
+                    Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 12),
+                      child: _FavCard(
+                        title: 'Documentos',
+                        child: _favDocs.isEmpty
+                            ? const Padding(
+                                padding: EdgeInsets.all(16.0),
+                                child: Text('No tienes documentos favoritos'),
+                              )
+                            : GridView.builder(
+                                shrinkWrap: true,
+                                physics: const NeverScrollableScrollPhysics(),
+                                padding: const EdgeInsets.fromLTRB(8, 8, 8, 12),
+                                gridDelegate:
+                                    const SliverGridDelegateWithFixedCrossAxisCount(
+                                  crossAxisCount: 2,
+                                  mainAxisSpacing: 10,
+                                  crossAxisSpacing: 10,
+                                  childAspectRatio: .95,
+                                ),
+                                itemCount: _favDocs.length,
+                                itemBuilder: (ctx, i) {
+                                  final ref = _favDocs[i];
+                                  return _DocTile(
+                                    name: ref.name,
+                                    onTap: () => _downloadAndOpenFile(ref),
+                                  );
+                                },
+                              ),
+                      ),
+                    ),
+
+                    // ---- Videos favoritos ----
+                    Padding(
+                      padding: const EdgeInsets.fromLTRB(12, 8, 12, 0),
+                      child: _FavCard(
+                        title: 'Videos',
+                        child: _favVideos.isEmpty
+                            ? const Padding(
+                                padding: EdgeInsets.all(16.0),
+                                child: Text('No tienes videos favoritos'),
+                              )
+                            : ListView.separated(
+                                shrinkWrap: true,
+                                physics: const NeverScrollableScrollPhysics(),
+                                padding: const EdgeInsets.fromLTRB(8, 8, 8, 12),
+                                itemCount: _favVideos.length,
+                                separatorBuilder: (_, __) =>
+                                    const SizedBox(height: 10),
+                                itemBuilder: (ctx, i) {
+                                  final v = _favVideos[i];
+                                  return _VideoTile(
+                                    title: v.title,
+                                    youtubeId: v.youtubeId,
+                                    description: v.description,
+                                    // Por ahora, solo mostramos. Si quieres que abra VideoScreen con ese ID,
+                                    // podemos agregar navegación con argumentos.
+                                    onTap: () {
+                                      // Navega a la pantalla de videos
+                                      Navigator.pushReplacementNamed(
+                                          context, '/video');
+                                    },
+                                  );
+                                },
+                              ),
+                      ),
+                    ),
+                  ],
 
                   const SizedBox(height: 12),
                 ],
               ),
             ),
 
-      // Bottom nav unificado — usa navegación por defecto: ['/biblioteca','/video','/home','/chat']
+      // Bottom nav — usa navegación por defecto: ['/biblioteca','/video','/home','/chat']
       bottomNavigationBar: const CapfiscalBottomNav(
         currentIndex: 3, // Perfil
       ),
@@ -717,6 +898,185 @@ class _SubscriptionRow extends StatelessWidget {
             ),
           ),
         ],
+      ),
+    );
+  }
+}
+
+// ---- Tarjetas y tiles de Favoritos ----
+
+class _FavCard extends StatelessWidget {
+  const _FavCard({required this.title, required this.child});
+
+  final String title;
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) {
+    return Card(
+      elevation: 0,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+      color: Colors.white,
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(12, 10, 12, 12),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(title,
+                style: const TextStyle(
+                  fontWeight: FontWeight.w800,
+                  fontSize: 16,
+                  color: Color(0xFF6B1A1A),
+                )),
+            const SizedBox(height: 8),
+            child,
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _DocTile extends StatelessWidget {
+  const _DocTile({
+    required this.name,
+    required this.onTap,
+  });
+
+  final String name;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(12),
+      child: Container(
+        padding: const EdgeInsets.all(12),
+        decoration: BoxDecoration(
+          color: const Color(0xFFF9F9F9),
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: Colors.black12),
+        ),
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            const Icon(Icons.description, size: 40, color: Color(0xFF6B1A1A)),
+            const SizedBox(height: 8),
+            Text(
+              name,
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
+              textAlign: TextAlign.center,
+              style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _FavVideo {
+  final String docId;
+  final String youtubeId;
+  final String title;
+  final String description;
+
+  _FavVideo({
+    required this.docId,
+    required this.youtubeId,
+    required this.title,
+    required this.description,
+  });
+}
+
+class _VideoTile extends StatelessWidget {
+  const _VideoTile({
+    required this.title,
+    required this.youtubeId,
+    required this.description,
+    required this.onTap,
+  });
+
+  final String title;
+  final String youtubeId;
+  final String description;
+  final VoidCallback onTap;
+
+  String get _thumb => 'https://img.youtube.com/vi/$youtubeId/hqdefault.jpg';
+
+  @override
+  Widget build(BuildContext context) {
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(12),
+      child: Container(
+        decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: Colors.black12),
+          boxShadow: const [
+            BoxShadow(
+              color: Colors.black12,
+              blurRadius: 2,
+              offset: Offset(0, 1),
+            )
+          ],
+        ),
+        child: Row(
+          children: [
+            ClipRRect(
+              borderRadius: const BorderRadius.only(
+                topLeft: Radius.circular(12),
+                bottomLeft: Radius.circular(12),
+              ),
+              child: Image.network(
+                _thumb,
+                width: 92,
+                height: 72,
+                fit: BoxFit.cover,
+              ),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Padding(
+                padding:
+                    const EdgeInsets.symmetric(vertical: 10, horizontal: 6),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      title.isEmpty ? 'Video' : title,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                        fontWeight: FontWeight.w800,
+                        fontSize: 16,
+                      ),
+                    ),
+                    const SizedBox(height: 6),
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 8, vertical: 6),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFFE7E7E7),
+                        borderRadius: BorderRadius.circular(6),
+                      ),
+                      child: Text(
+                        description.isEmpty ? 'Descripción' : description,
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                            fontSize: 12, color: Colors.black87),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }
