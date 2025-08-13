@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:firebase_storage/firebase_storage.dart';
 import 'package:open_filex/open_filex.dart';
 import 'package:path_provider/path_provider.dart';
+import 'package:firebase_auth/firebase_auth.dart'; // ✅ UID para favoritos por usuario
 
 import '../widgets/filters_sheet.dart';
 import '../widgets/file_list_tile.dart';
@@ -25,6 +26,7 @@ class BibliotecaLegalScreen extends StatefulWidget {
 class _BibliotecaLegalScreenState extends State<BibliotecaLegalScreen> {
   final GlobalKey<ScaffoldState> _scaffoldKey = GlobalKey<ScaffoldState>();
   final FirebaseStorage _storage = FirebaseStorage.instance;
+  final FirebaseAuth _auth = FirebaseAuth.instance; // ✅
 
   List<Reference> _files = [];
   bool _loading = true;
@@ -128,6 +130,27 @@ class _BibliotecaLegalScreenState extends State<BibliotecaLegalScreen> {
         },
       ),
     );
+  }
+
+  // === Helpers favoritos por usuario ===
+
+  Future<bool> _isFavoriteForCurrentUser(String itemKey) async {
+    final uid = _auth.currentUser?.uid;
+    if (uid == null) return false; // si no hay sesión, no hay favs
+    return FavoritesManager.isFavorite(uid, itemKey);
+  }
+
+  Future<void> _toggleFavoriteForCurrentUser(String itemKey) async {
+    final uid = _auth.currentUser?.uid;
+    if (uid == null) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Inicia sesión para usar favoritos')),
+      );
+      return;
+    }
+    await FavoritesManager.toggleFavorite(uid, itemKey);
+    if (mounted) setState(() {}); // refresca íconos
   }
 
   @override
@@ -260,13 +283,11 @@ class _BibliotecaLegalScreenState extends State<BibliotecaLegalScreen> {
                               return FileListTile(
                                 name: ref.name,
                                 onTap: () => _downloadAndOpenFile(ref),
+                                // ✅ favoritos por usuario
                                 isFavoriteFuture:
-                                    FavoritesManager.isFavorite(ref.name),
-                                onToggleFavorite: () async {
-                                  await FavoritesManager.toggleFavorite(
-                                      ref.name);
-                                  if (mounted) setState(() {});
-                                },
+                                    _isFavoriteForCurrentUser(ref.name),
+                                onToggleFavorite: () =>
+                                    _toggleFavoriteForCurrentUser(ref.name),
                               );
                             },
                           )
@@ -285,13 +306,11 @@ class _BibliotecaLegalScreenState extends State<BibliotecaLegalScreen> {
                               return FileGridCard(
                                 name: ref.name,
                                 onTap: () => _downloadAndOpenFile(ref),
+                                // ✅ favoritos por usuario
                                 isFavoriteFuture:
-                                    FavoritesManager.isFavorite(ref.name),
-                                onToggleFavorite: () async {
-                                  await FavoritesManager.toggleFavorite(
-                                      ref.name);
-                                  if (mounted) setState(() {});
-                                },
+                                    _isFavoriteForCurrentUser(ref.name),
+                                onToggleFavorite: () =>
+                                    _toggleFavoriteForCurrentUser(ref.name),
                               );
                             },
                           )),

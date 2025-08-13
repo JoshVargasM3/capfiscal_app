@@ -35,6 +35,7 @@ class _UserProfileScreenState extends State<UserProfileScreen> {
   bool _loading = true;
   bool _saving = false;
   bool _editing = false;
+  bool _signingOut = false;
 
   // Favoritos
   bool _loadingFavs = true;
@@ -97,7 +98,7 @@ class _UserProfileScreenState extends State<UserProfileScreen> {
         if (end is Timestamp) _endDate = end.toDate();
       }
 
-      // Carga favoritos en paralelo
+      // Carga favoritos en paralelo (POR USUARIO)
       await _loadFavorites();
     } catch (_) {
       // opcional: log
@@ -106,39 +107,114 @@ class _UserProfileScreenState extends State<UserProfileScreen> {
     }
   }
 
+  // Acepta varias llaves en Firestore por si no siempre es 'youtubeId'
+  String _extractYoutubeRaw(Map<String, dynamic> data) {
+    final candidates = [
+      'youtubeId',
+      'youtube_id',
+      'ytId',
+      'yt_id',
+      'videoId',
+      'video_id',
+      'url',
+      'link',
+      'youtube',
+      'video',
+    ];
+    for (final k in candidates) {
+      final val = data[k];
+      if (val is String && val.trim().isNotEmpty) return val.trim();
+    }
+    return '';
+  }
+
+  // Normaliza ID de YouTube desde url/shorts/watch/embed
+  String _normalizeYouTubeId(String raw) {
+    final v = raw.trim();
+    final idRe = RegExp(r'^[a-zA-Z0-9_-]{11}$');
+    if (idRe.hasMatch(v)) return v;
+
+    Uri? u;
+    try {
+      u = Uri.parse(v);
+    } catch (_) {
+      return v;
+    }
+
+    if (u.host.contains('youtu.be')) {
+      if (u.pathSegments.isNotEmpty && idRe.hasMatch(u.pathSegments.first)) {
+        return u.pathSegments.first;
+      }
+    }
+
+    if (u.host.contains('youtube.com')) {
+      final q = u.queryParameters['v'];
+      if (q != null && idRe.hasMatch(q)) return q;
+
+      final segs = u.pathSegments;
+      final i = segs.indexOf('shorts');
+      if (i >= 0 && i + 1 < segs.length && idRe.hasMatch(segs[i + 1])) {
+        return segs[i + 1];
+      }
+      final j = segs.indexOf('embed');
+      if (j >= 0 && j + 1 < segs.length && idRe.hasMatch(segs[j + 1])) {
+        return segs[j + 1];
+      }
+    }
+    return v;
+  }
+
+  // Chequea si un valor está en favoritos con o sin prefijo (video:/doc:)
+  bool _inFav(Set<String> favSet, String value, {String? typePrefix}) {
+    if (value.isEmpty) return false;
+    if (favSet.contains(value)) return true;
+    if (typePrefix != null && favSet.contains('$typePrefix:$value'))
+      return true;
+    return false;
+  }
+
   Future<void> _loadFavorites() async {
     try {
-      final favNames =
-          await FavoritesManager.getFavorites(); // Set<String> o List<String>
-      final favSet = favNames.toSet();
+      final uid = _auth.currentUser?.uid;
+      if (uid == null) {
+        if (mounted) setState(() => _loadingFavs = false);
+        return;
+      }
+
+      // ✅ Favoritos por usuario (SharedPreferences namespaced)
+      final favNames = await FavoritesManager.getFavorites(uid);
+      final favSet = favNames.map((e) => e.trim()).toSet();
 
       // --- Documentos favoritos (Storage raíz) ---
       final root = await _storage.ref('/').listAll();
-      final docs =
-          root.items.where((ref) => favSet.contains(ref.name)).toList();
+      final docs = root.items.where((ref) {
+        return _inFav(favSet, ref.name) ||
+            _inFav(favSet, ref.name, typePrefix: 'doc');
+      }).toList();
 
       // --- Videos favoritos (Firestore 'videos') ---
       final vSnap = await _db.collection('videos').get();
       final List<_FavVideo> vids = [];
       for (final d in vSnap.docs) {
         final data = d.data();
-        final raw = (data['youtubeId'] ?? '').toString().trim();
+        final raw = _extractYoutubeRaw(data);
+        final id = _normalizeYouTubeId(raw);
         final title = (data['title'] ?? '').toString().trim();
         final desc = (data['description'] ?? '').toString().trim();
-        final id = _normalizeYouTubeId(raw);
 
-        // Coincidimos por tres posibles llaves: title, youtubeId (id) o docId
-        if (favSet.contains(title) ||
-            favSet.contains(id) ||
-            favSet.contains(d.id)) {
-          if (id.length == 11) {
-            vids.add(_FavVideo(
-              docId: d.id,
-              youtubeId: id,
-              title: title.isEmpty ? 'Video' : title,
-              description: desc,
-            ));
-          }
+        final isFav = _inFav(favSet, id, typePrefix: 'video') ||
+            _inFav(favSet, d.id, typePrefix: 'video') ||
+            _inFav(favSet, title, typePrefix: 'video') ||
+            favSet.contains(d.id) ||
+            favSet.contains(title);
+
+        if (isFav && RegExp(r'^[a-zA-Z0-9_-]{11}$').hasMatch(id)) {
+          vids.add(_FavVideo(
+            docId: d.id,
+            youtubeId: id,
+            title: title.isEmpty ? 'Video' : title,
+            description: desc,
+          ));
         }
       }
 
@@ -364,7 +440,6 @@ class _UserProfileScreenState extends State<UserProfileScreen> {
 
   // --------- Acciones de cuenta ---------
 
-  // ignore: unused_element
   Future<void> _sendPasswordReset() async {
     final email = _auth.currentUser?.email ?? _emailCtrl.text.trim();
     if (email.isEmpty) {
@@ -402,11 +477,45 @@ class _UserProfileScreenState extends State<UserProfileScreen> {
     }
   }
 
-  // ignore: unused_element
   Future<void> _signOut() async {
-    await _auth.signOut();
-    if (!mounted) return;
-    Navigator.of(context).pushNamedAndRemoveUntil('/login', (route) => false);
+    setState(() => _signingOut = true);
+    try {
+      await _auth.signOut();
+      if (!mounted) return;
+      // ✅ Volver a la raíz controlada por AuthGate
+      Navigator.of(context).pushNamedAndRemoveUntil('/', (route) => false);
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('No se pudo cerrar sesión: $e')),
+      );
+    } finally {
+      if (mounted) setState(() => _signingOut = false);
+    }
+  }
+
+  Future<void> _confirmSignOut() async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: const Text('Cerrar sesión'),
+        content: const Text('¿Seguro que deseas cerrar tu sesión?'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancelar'),
+          ),
+          ElevatedButton.icon(
+            onPressed: () => Navigator.pop(context, true),
+            icon: const Icon(Icons.logout),
+            label: const Text('Cerrar sesión'),
+          ),
+        ],
+      ),
+    );
+    if (ok == true) {
+      await _signOut();
+    }
   }
 
   // ------------------- UI -------------------
@@ -448,42 +557,6 @@ class _UserProfileScreenState extends State<UserProfileScreen> {
     return '$dd/$mm/$yy';
   }
 
-  // Normaliza ID de YouTube desde url/shorts/watch/embed
-  String _normalizeYouTubeId(String raw) {
-    final v = raw.trim();
-    final idRe = RegExp(r'^[a-zA-Z0-9_-]{11}$');
-    if (idRe.hasMatch(v)) return v;
-
-    Uri? u;
-    try {
-      u = Uri.parse(v);
-    } catch (_) {
-      return v;
-    }
-
-    if (u.host.contains('youtu.be')) {
-      if (u.pathSegments.isNotEmpty && idRe.hasMatch(u.pathSegments.first)) {
-        return u.pathSegments.first;
-      }
-    }
-
-    if (u.host.contains('youtube.com')) {
-      final q = u.queryParameters['v'];
-      if (q != null && idRe.hasMatch(q)) return q;
-
-      final segs = u.pathSegments;
-      final i = segs.indexOf('shorts');
-      if (i >= 0 && i + 1 < segs.length && idRe.hasMatch(segs[i + 1])) {
-        return segs[i + 1];
-      }
-      final j = segs.indexOf('embed');
-      if (j >= 0 && j + 1 < segs.length && idRe.hasMatch(segs[j + 1])) {
-        return segs[j + 1];
-      }
-    }
-    return v;
-  }
-
   @override
   Widget build(BuildContext context) {
     final isVerified = _auth.currentUser?.emailVerified ?? false;
@@ -508,7 +581,7 @@ class _UserProfileScreenState extends State<UserProfileScreen> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
-                  // Regresar
+                  // Regresar + Cerrar sesión
                   Container(
                     color: Colors.white,
                     padding: const EdgeInsets.fromLTRB(12, 12, 12, 6),
@@ -524,6 +597,22 @@ class _UserProfileScreenState extends State<UserProfileScreen> {
                           child: const Text('Regresar',
                               style: TextStyle(color: Colors.black87)),
                         ),
+                        const Spacer(),
+                        TextButton.icon(
+                          onPressed: _signingOut ? null : _confirmSignOut,
+                          icon: _signingOut
+                              ? const SizedBox(
+                                  width: 16,
+                                  height: 16,
+                                  child:
+                                      CircularProgressIndicator(strokeWidth: 2))
+                              : const Icon(Icons.logout,
+                                  color: Color(0xFF6B1A1A)),
+                          label: const Text(
+                            'Cerrar sesión',
+                            style: TextStyle(color: Color(0xFF6B1A1A)),
+                          ),
+                        )
                       ],
                     ),
                   ),
@@ -681,6 +770,36 @@ class _UserProfileScreenState extends State<UserProfileScreen> {
                     ),
                   ),
 
+                  // Botón Cerrar sesión destacado (alternativo al header)
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
+                    child: ElevatedButton.icon(
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: Colors.white,
+                        foregroundColor: const Color(0xFF6B1A1A),
+                        side: const BorderSide(color: Color(0xFF6B1A1A)),
+                      ),
+                      onPressed: _signingOut ? null : _confirmSignOut,
+                      icon: const Icon(Icons.logout),
+                      label: const Text('Cerrar sesión'),
+                    ),
+                  ),
+                  // Botón Restablecer contraseña (para usar _sendPasswordReset y evitar el warning)
+                  if ((_auth.currentUser?.email ?? _emailCtrl.text.trim())
+                      .isNotEmpty)
+                    Padding(
+                      padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
+                      child: ElevatedButton.icon(
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: Colors.white,
+                          foregroundColor: const Color(0xFF6B1A1A),
+                          side: const BorderSide(color: Color(0xFF6B1A1A)),
+                        ),
+                        onPressed: _sendPasswordReset,
+                        icon: const Icon(Icons.lock_reset),
+                        label: const Text('Restablecer contraseña'),
+                      ),
+                    ),
                   // Sección de suscripción
                   Padding(
                     padding: const EdgeInsets.fromLTRB(16, 8, 16, 8),
@@ -717,7 +836,7 @@ class _UserProfileScreenState extends State<UserProfileScreen> {
                       child: Center(child: CircularProgressIndicator()),
                     )
                   else ...[
-                    // ---- Documentos favoritos ----
+                    // ---- Documentos favoritos (carrusel horizontal) ----
                     Padding(
                       padding: const EdgeInsets.symmetric(horizontal: 12),
                       child: _FavCard(
@@ -727,30 +846,32 @@ class _UserProfileScreenState extends State<UserProfileScreen> {
                                 padding: EdgeInsets.all(16.0),
                                 child: Text('No tienes documentos favoritos'),
                               )
-                            : GridView.builder(
-                                shrinkWrap: true,
-                                physics: const NeverScrollableScrollPhysics(),
-                                padding: const EdgeInsets.fromLTRB(8, 8, 8, 12),
-                                gridDelegate:
-                                    const SliverGridDelegateWithFixedCrossAxisCount(
-                                  crossAxisCount: 2,
-                                  mainAxisSpacing: 10,
-                                  crossAxisSpacing: 10,
-                                  childAspectRatio: .95,
+                            : SizedBox(
+                                height: 150,
+                                child: ListView.separated(
+                                  scrollDirection: Axis.horizontal,
+                                  physics: const BouncingScrollPhysics(),
+                                  padding:
+                                      const EdgeInsets.fromLTRB(8, 8, 8, 12),
+                                  itemCount: _favDocs.length,
+                                  separatorBuilder: (_, __) =>
+                                      const SizedBox(width: 10),
+                                  itemBuilder: (ctx, i) {
+                                    final ref = _favDocs[i];
+                                    return SizedBox(
+                                      width: 150,
+                                      child: _DocTile(
+                                        name: ref.name,
+                                        onTap: () => _downloadAndOpenFile(ref),
+                                      ),
+                                    );
+                                  },
                                 ),
-                                itemCount: _favDocs.length,
-                                itemBuilder: (ctx, i) {
-                                  final ref = _favDocs[i];
-                                  return _DocTile(
-                                    name: ref.name,
-                                    onTap: () => _downloadAndOpenFile(ref),
-                                  );
-                                },
                               ),
                       ),
                     ),
 
-                    // ---- Videos favoritos ----
+                    // ---- Videos favoritos (carrusel horizontal) ----
                     Padding(
                       padding: const EdgeInsets.fromLTRB(12, 8, 12, 0),
                       child: _FavCard(
@@ -760,28 +881,42 @@ class _UserProfileScreenState extends State<UserProfileScreen> {
                                 padding: EdgeInsets.all(16.0),
                                 child: Text('No tienes videos favoritos'),
                               )
-                            : ListView.separated(
-                                shrinkWrap: true,
-                                physics: const NeverScrollableScrollPhysics(),
-                                padding: const EdgeInsets.fromLTRB(8, 8, 8, 12),
-                                itemCount: _favVideos.length,
-                                separatorBuilder: (_, __) =>
-                                    const SizedBox(height: 10),
-                                itemBuilder: (ctx, i) {
-                                  final v = _favVideos[i];
-                                  return _VideoTile(
-                                    title: v.title,
-                                    youtubeId: v.youtubeId,
-                                    description: v.description,
-                                    // Por ahora, solo mostramos. Si quieres que abra VideoScreen con ese ID,
-                                    // podemos agregar navegación con argumentos.
-                                    onTap: () {
-                                      // Navega a la pantalla de videos
-                                      Navigator.pushReplacementNamed(
-                                          context, '/video');
-                                    },
-                                  );
-                                },
+                            : SizedBox(
+                                height: 130,
+                                child: LayoutBuilder(
+                                  builder: (ctx, constraints) {
+                                    // Ancho máximo por tarjeta (evita overflow en pantallas pequeñas)
+                                    double cardWidth =
+                                        MediaQuery.of(ctx).size.width - 48;
+                                    if (cardWidth < 220) cardWidth = 220;
+                                    if (cardWidth > 340) cardWidth = 340;
+
+                                    return ListView.separated(
+                                      scrollDirection: Axis.horizontal,
+                                      physics: const BouncingScrollPhysics(),
+                                      padding: const EdgeInsets.fromLTRB(
+                                          8, 8, 8, 12),
+                                      itemCount: _favVideos.length,
+                                      separatorBuilder: (_, __) =>
+                                          const SizedBox(width: 10),
+                                      itemBuilder: (ctx, i) {
+                                        final v = _favVideos[i];
+                                        return SizedBox(
+                                          width: cardWidth,
+                                          child: _VideoTile(
+                                            title: v.title,
+                                            youtubeId: v.youtubeId,
+                                            description: v.description,
+                                            onTap: () {
+                                              Navigator.pushReplacementNamed(
+                                                  context, '/video');
+                                            },
+                                          ),
+                                        );
+                                      },
+                                    );
+                                  },
+                                ),
                               ),
                       ),
                     ),
@@ -952,6 +1087,7 @@ class _DocTile extends StatelessWidget {
       onTap: onTap,
       borderRadius: BorderRadius.circular(12),
       child: Container(
+        clipBehavior: Clip.hardEdge,
         padding: const EdgeInsets.all(12),
         decoration: BoxDecoration(
           color: const Color(0xFFF9F9F9),
@@ -1012,6 +1148,7 @@ class _VideoTile extends StatelessWidget {
       onTap: onTap,
       borderRadius: BorderRadius.circular(12),
       child: Container(
+        clipBehavior: Clip.hardEdge,
         decoration: BoxDecoration(
           color: Colors.white,
           borderRadius: BorderRadius.circular(12),
@@ -1026,23 +1163,33 @@ class _VideoTile extends StatelessWidget {
         ),
         child: Row(
           children: [
+            // Miniatura con aspecto fijo para evitar desbordes
             ClipRRect(
               borderRadius: const BorderRadius.only(
                 topLeft: Radius.circular(12),
                 bottomLeft: Radius.circular(12),
               ),
-              child: Image.network(
-                _thumb,
-                width: 92,
-                height: 72,
-                fit: BoxFit.cover,
+              child: SizedBox(
+                width: 120,
+                child: AspectRatio(
+                  aspectRatio: 16 / 9,
+                  child: Image.network(
+                    _thumb,
+                    fit: BoxFit.cover,
+                    errorBuilder: (_, __, ___) => Container(
+                      color: const Color(0xFFE7E7E7),
+                      alignment: Alignment.center,
+                      child: const Icon(Icons.image_not_supported),
+                    ),
+                  ),
+                ),
               ),
             ),
-            const SizedBox(width: 12),
+            const SizedBox(width: 10),
+            // Texto
             Expanded(
               child: Padding(
-                padding:
-                    const EdgeInsets.symmetric(vertical: 10, horizontal: 6),
+                padding: const EdgeInsets.fromLTRB(0, 10, 10, 10),
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [

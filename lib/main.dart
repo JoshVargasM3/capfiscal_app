@@ -28,12 +28,11 @@ class MyApp extends StatelessWidget {
     return MaterialApp(
       debugShowCheckedModeBanner: false,
 
-      // Punto de entrada: si hay sesión -> Home (o lo que devuelva AuthGate),
-      // si no -> Login. AuthGate se encarga de decidir.
-      home: const AuthGate(),
+      // ✅ Siempre arrancamos en '/', que muestra el AuthGate
+      initialRoute: '/',
 
-      // Rutas nombradas usadas por la app
       routes: {
+        '/': (context) => const AuthGate(), // raíz controlada por AuthGate
         '/login': (context) => const LoginScreen(),
         '/home': (context) => const HomeScreen(),
         '/biblioteca': (context) => const BibliotecaLegalScreen(),

@@ -46,9 +46,26 @@ flutter_launcher_icons:
   image_path: "assets/app_icon/icon.png"
 
 flutter_native_splash:
-  color: "#AA1010FF"
-  image: assets/app_icon/icon.png
   android: true
   ios: true
   web: false
+
+  # Fondo blanco (también en modo oscuro para evitar flicker)
+  color: "#FFFFFF"
+  color_dark: "#FFFFFF"
+
+  # Tu logo centrado
+  image: assets/app_icon/icon.png
+
+  # Asegura centrado en ambas plataformas
+  android_gravity: center
+  ios_content_mode: center
+
   fullscreen: true
+
+  # Android 12: configurar explícitamente el color e imagen
+  android_12:
+    color: "#FFFFFF"
+    color_dark: "#FFFFFF"
+    image: assets/app_icon/icon.png
+
