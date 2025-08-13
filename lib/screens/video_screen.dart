@@ -26,7 +26,7 @@ class _VideoScreenState extends State<VideoScreen> {
   // Player (WebView)
   WebViewController? _wv;
   String? _activeVideoId;
-  _VideoMeta? _activeMeta; // ✅ para mostrar título/desc del video activo
+  _VideoMeta? _activeMeta; // para mostrar título/desc del video activo
   String? _scheduledInitialId;
 
   // ---- Firestore stream ----
@@ -116,9 +116,7 @@ class _VideoScreenState extends State<VideoScreen> {
         ..setBackgroundColor(const Color(0xFF000000))
         ..setNavigationDelegate(
           NavigationDelegate(
-            onNavigationRequest: (request) {
-              return NavigationDecision.navigate;
-            },
+            onNavigationRequest: (request) => NavigationDecision.navigate,
           ),
         )
         ..loadRequest(Uri.parse(url));
@@ -247,169 +245,189 @@ class _VideoScreenState extends State<VideoScreen> {
           return Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              // Regresar
-              Container(
-                color: Colors.white,
-                padding: const EdgeInsets.fromLTRB(12, 12, 12, 6),
-                child: Row(
-                  children: [
-                    const Icon(Icons.arrow_back, size: 18),
-                    const SizedBox(width: 6),
-                    TextButton(
-                      style: TextButton.styleFrom(
-                        padding: EdgeInsets.zero,
-                        minimumSize: const Size(0, 0),
-                      ),
-                      onPressed: () => Navigator.of(context).maybePop(),
-                      child: const Text('Regresar',
-                          style: TextStyle(color: Colors.black87)),
-                    ),
-                  ],
-                ),
-              ),
-
-              // Título
-              Padding(
-                padding: const EdgeInsets.fromLTRB(16, 6, 16, 6),
-                child: Align(
-                  alignment: Alignment.centerLeft,
-                  child: Text(
-                    'VIDEOS',
-                    style: Theme.of(context).textTheme.headlineSmall?.copyWith(
-                          fontWeight: FontWeight.w800,
-                          letterSpacing: .5,
-                          color: const Color(0xFF6B1A1A),
-                        ),
-                  ),
-                ),
-              ),
-
-              // Buscador
-              Padding(
-                padding: const EdgeInsets.fromLTRB(12, 4, 12, 10),
-                child: Row(
-                  children: [
-                    Expanded(
-                      child: SizedBox(
-                        height: 40,
-                        child: TextField(
-                          onChanged: (q) => setState(() => _search = q),
-                          decoration: InputDecoration(
-                            contentPadding:
-                                const EdgeInsets.symmetric(horizontal: 12),
-                            hintText: 'Buscar videos...',
-                            prefixIcon: const Icon(Icons.search),
-                            filled: true,
-                            fillColor: Colors.white,
-                            border: OutlineInputBorder(
-                              borderRadius: BorderRadius.circular(24),
-                              borderSide:
-                                  const BorderSide(color: Colors.black26),
-                            ),
-                            enabledBorder: OutlineInputBorder(
-                              borderRadius: BorderRadius.circular(24),
-                              borderSide:
-                                  const BorderSide(color: Colors.black26),
-                            ),
-                            focusedBorder: const OutlineInputBorder(
-                              borderRadius:
-                                  BorderRadius.all(Radius.circular(24)),
-                              borderSide: BorderSide(
-                                  color: Color(0xFF6B1A1A), width: 1.2),
-                            ),
-                          ),
-                        ),
-                      ),
-                    ),
-                    const SizedBox(width: 8),
-                    TextButton.icon(
-                      onPressed: () {},
-                      icon: const Icon(Icons.filter_list),
-                      label: const Text('Filtros'),
-                      style: TextButton.styleFrom(
-                        foregroundColor: Colors.black87,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-
-              // Player grande + título + descripción (mockup)
-              if (_wv != null && _activeVideoId != null) ...[
-                Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 12),
-                  child: ClipRRect(
-                    borderRadius: BorderRadius.circular(12),
-                    child: AspectRatio(
-                      aspectRatio: 16 / 9,
-                      child: WebViewWidget(controller: _wv!),
-                    ),
-                  ),
-                ),
-                const SizedBox(height: 12),
-
-                // Título + corazón de favorito
-                if (_activeMeta != null)
-                  Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: 12),
-                    child: Row(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Expanded(
-                          child: Text(
-                            _activeMeta!.title.isEmpty
-                                ? 'Título del video'
-                                : _activeMeta!.title,
-                            maxLines: 2,
-                            overflow: TextOverflow.ellipsis,
-                            style: const TextStyle(
-                              fontWeight: FontWeight.w800,
-                              fontSize: 18,
-                            ),
-                          ),
-                        ),
-                        const SizedBox(width: 8),
-                        FutureBuilder<bool>(
-                          future: _isFavoriteForCurrentUser(
-                              _favKeyForVideo(_activeMeta!.youtubeId)),
-                          builder: (context, snap) {
-                            final fav = snap.data ?? false;
-                            return IconButton(
-                              tooltip: fav
-                                  ? 'Quitar de favoritos'
-                                  : 'Agregar a favoritos',
-                              onPressed: () => _toggleFavoriteForCurrentUser(
-                                  _favKeyForVideo(_activeMeta!.youtubeId)),
-                              icon: Icon(
-                                fav ? Icons.favorite : Icons.favorite_border,
-                                color: const Color(0xFF6B1A1A),
+              // ====== BLOQUE SUPERIOR DESPLAZABLE (evita overflow) ======
+              Flexible(
+                fit: FlexFit.loose,
+                child: SingleChildScrollView(
+                  padding: EdgeInsets.zero,
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      // Regresar
+                      Container(
+                        color: Colors.white,
+                        padding: const EdgeInsets.fromLTRB(12, 12, 12, 6),
+                        child: Row(
+                          children: [
+                            const Icon(Icons.arrow_back, size: 18),
+                            const SizedBox(width: 6),
+                            TextButton(
+                              style: TextButton.styleFrom(
+                                padding: EdgeInsets.zero,
+                                minimumSize: const Size(0, 0),
                               ),
-                            );
-                          },
+                              onPressed: () => Navigator.of(context).maybePop(),
+                              child: const Text('Regresar',
+                                  style: TextStyle(color: Colors.black87)),
+                            ),
+                          ],
                         ),
-                      ],
-                    ),
-                  ),
+                      ),
 
-                // Descripción
-                if (_activeMeta != null)
-                  Padding(
-                    padding: const EdgeInsets.fromLTRB(12, 6, 12, 12),
-                    child: Container(
-                      padding: const EdgeInsets.all(12),
-                      decoration: BoxDecoration(
-                        color: const Color(0xFFE7E7E7),
-                        borderRadius: BorderRadius.circular(6),
+                      // Título
+                      Padding(
+                        padding: const EdgeInsets.fromLTRB(16, 6, 16, 6),
+                        child: Align(
+                          alignment: Alignment.centerLeft,
+                          child: Text(
+                            'VIDEOS',
+                            style: Theme.of(context)
+                                .textTheme
+                                .headlineSmall
+                                ?.copyWith(
+                                  fontWeight: FontWeight.w800,
+                                  letterSpacing: .5,
+                                  color: const Color(0xFF6B1A1A),
+                                ),
+                          ),
+                        ),
                       ),
-                      child: Text(
-                        _activeMeta!.description.isEmpty
-                            ? 'Descripción'
-                            : _activeMeta!.description,
-                        style: const TextStyle(fontSize: 12),
+
+                      // Buscador
+                      Padding(
+                        padding: const EdgeInsets.fromLTRB(12, 4, 12, 10),
+                        child: Row(
+                          children: [
+                            Expanded(
+                              child: SizedBox(
+                                height: 40,
+                                child: TextField(
+                                  onChanged: (q) => setState(() => _search = q),
+                                  decoration: InputDecoration(
+                                    contentPadding: const EdgeInsets.symmetric(
+                                        horizontal: 12),
+                                    hintText: 'Buscar videos...',
+                                    prefixIcon: const Icon(Icons.search),
+                                    filled: true,
+                                    fillColor: Colors.white,
+                                    border: OutlineInputBorder(
+                                      borderRadius: BorderRadius.circular(24),
+                                      borderSide: const BorderSide(
+                                          color: Colors.black26),
+                                    ),
+                                    enabledBorder: OutlineInputBorder(
+                                      borderRadius: BorderRadius.circular(24),
+                                      borderSide: const BorderSide(
+                                          color: Colors.black26),
+                                    ),
+                                    focusedBorder: const OutlineInputBorder(
+                                      borderRadius:
+                                          BorderRadius.all(Radius.circular(24)),
+                                      borderSide: BorderSide(
+                                          color: Color(0xFF6B1A1A), width: 1.2),
+                                    ),
+                                  ),
+                                ),
+                              ),
+                            ),
+                            const SizedBox(width: 8),
+                            TextButton.icon(
+                              onPressed: () {},
+                              icon: const Icon(Icons.filter_list),
+                              label: const Text('Filtros'),
+                              style: TextButton.styleFrom(
+                                foregroundColor: Colors.black87,
+                              ),
+                            ),
+                          ],
+                        ),
                       ),
-                    ),
+
+                      // Player grande + título + descripción (mockup)
+                      if (_wv != null && _activeVideoId != null) ...[
+                        Padding(
+                          padding: const EdgeInsets.symmetric(horizontal: 12),
+                          child: ClipRRect(
+                            borderRadius: BorderRadius.circular(12),
+                            child: AspectRatio(
+                              aspectRatio: 16 / 9,
+                              child: WebViewWidget(controller: _wv!),
+                            ),
+                          ),
+                        ),
+                        const SizedBox(height: 12),
+
+                        // Título + corazón de favorito
+                        if (_activeMeta != null)
+                          Padding(
+                            padding: const EdgeInsets.symmetric(horizontal: 12),
+                            child: Row(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Expanded(
+                                  child: Text(
+                                    _activeMeta!.title.isEmpty
+                                        ? 'Título del video'
+                                        : _activeMeta!.title,
+                                    maxLines: 2,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: const TextStyle(
+                                      fontWeight: FontWeight.w800,
+                                      fontSize: 18,
+                                    ),
+                                  ),
+                                ),
+                                const SizedBox(width: 8),
+                                FutureBuilder<bool>(
+                                  future: _isFavoriteForCurrentUser(
+                                      _favKeyForVideo(_activeMeta!.youtubeId)),
+                                  builder: (context, snap) {
+                                    final fav = snap.data ?? false;
+                                    return IconButton(
+                                      tooltip: fav
+                                          ? 'Quitar de favoritos'
+                                          : 'Agregar a favoritos',
+                                      onPressed: () =>
+                                          _toggleFavoriteForCurrentUser(
+                                              _favKeyForVideo(
+                                                  _activeMeta!.youtubeId)),
+                                      icon: Icon(
+                                        fav
+                                            ? Icons.favorite
+                                            : Icons.favorite_border,
+                                        color: const Color(0xFF6B1A1A),
+                                      ),
+                                    );
+                                  },
+                                ),
+                              ],
+                            ),
+                          ),
+
+                        // Descripción
+                        if (_activeMeta != null)
+                          Padding(
+                            padding: const EdgeInsets.fromLTRB(12, 6, 12, 12),
+                            child: Container(
+                              padding: const EdgeInsets.all(12),
+                              decoration: BoxDecoration(
+                                color: const Color(0xFFE7E7E7),
+                                borderRadius: BorderRadius.circular(6),
+                              ),
+                              child: Text(
+                                _activeMeta!.description.isEmpty
+                                    ? 'Descripción'
+                                    : _activeMeta!.description,
+                                style: const TextStyle(fontSize: 12),
+                              ),
+                            ),
+                          ),
+                      ],
+                    ],
                   ),
-              ],
+                ),
+              ),
+              // ===========================================================
 
               // Lista de videos
               Expanded(
