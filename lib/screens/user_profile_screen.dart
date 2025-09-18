@@ -13,6 +13,20 @@ import '../widgets/app_bottom_nav.dart';
 import '../widgets/custom_drawer.dart';
 import '../helpers/favorites_manager.dart';
 
+/// 🎨 Paleta CAPFISCAL
+class _CapColors {
+  static const bgTop = Color(0xFF0A0A0B);
+  static const bgMid = Color(0xFF2A2A2F);
+  static const bgBottom = Color(0xFF4A4A50);
+  static const surface = Color(0xFF1C1C21);
+  static const surfaceAlt = Color(0xFF2A2A2F);
+  static const text = Color(0xFFEFEFEF);
+  static const textMuted = Color(0xFFBEBEC6);
+  static const field = Color(0xFF9D9FA3); // gris de campos
+  static const gold = Color(0xFFE1B85C);
+  static const goldDark = Color(0xFFB88F30);
+}
+
 class UserProfileScreen extends StatefulWidget {
   const UserProfileScreen({super.key});
 
@@ -98,16 +112,13 @@ class _UserProfileScreenState extends State<UserProfileScreen> {
         if (end is Timestamp) _endDate = end.toDate();
       }
 
-      // Carga favoritos en paralelo (POR USUARIO)
       await _loadFavorites();
     } catch (_) {
-      // opcional: log
     } finally {
       if (mounted) setState(() => _loading = false);
     }
   }
 
-  // Acepta varias llaves en Firestore por si no siempre es 'youtubeId'
   String _extractYoutubeRaw(Map<String, dynamic> data) {
     final candidates = [
       'youtubeId',
@@ -128,7 +139,6 @@ class _UserProfileScreenState extends State<UserProfileScreen> {
     return '';
   }
 
-  // Normaliza ID de YouTube desde url/shorts/watch/embed
   String _normalizeYouTubeId(String raw) {
     final v = raw.trim();
     final idRe = RegExp(r'^[a-zA-Z0-9_-]{11}$');
@@ -164,7 +174,6 @@ class _UserProfileScreenState extends State<UserProfileScreen> {
     return v;
   }
 
-  // Chequea si un valor está en favoritos con o sin prefijo (video:/doc:)
   bool _inFav(Set<String> favSet, String value, {String? typePrefix}) {
     if (value.isEmpty) return false;
     if (favSet.contains(value)) return true;
@@ -181,18 +190,15 @@ class _UserProfileScreenState extends State<UserProfileScreen> {
         return;
       }
 
-      // ✅ Favoritos por usuario (SharedPreferences namespaced)
       final favNames = await FavoritesManager.getFavorites(uid);
       final favSet = favNames.map((e) => e.trim()).toSet();
 
-      // --- Documentos favoritos (Storage raíz) ---
       final root = await _storage.ref('/').listAll();
       final docs = root.items.where((ref) {
         return _inFav(favSet, ref.name) ||
             _inFav(favSet, ref.name, typePrefix: 'doc');
       }).toList();
 
-      // --- Videos favoritos (Firestore 'videos') ---
       final vSnap = await _db.collection('videos').get();
       final List<_FavVideo> vids = [];
       for (final d in vSnap.docs) {
@@ -230,7 +236,6 @@ class _UserProfileScreenState extends State<UserProfileScreen> {
     }
   }
 
-  // Descarga y abre archivo
   Future<void> _downloadAndOpenFile(Reference ref) async {
     try {
       final dir = await getApplicationDocumentsDirectory();
@@ -254,7 +259,6 @@ class _UserProfileScreenState extends State<UserProfileScreen> {
     } catch (_) {}
   }
 
-  // Diálogo para pedir contraseña y reautenticar al cambiar email
   Future<bool> _reauthWithPassword(String email) async {
     final passCtrl = TextEditingController();
     final ok = await showDialog<bool>(
@@ -310,7 +314,6 @@ class _UserProfileScreenState extends State<UserProfileScreen> {
 
     setState(() => _saving = true);
     try {
-      // 1) Cambio de correo
       final currentEmail = user.email ?? '';
       final newEmail = _emailCtrl.text.trim();
       if (newEmail.isNotEmpty && newEmail != currentEmail) {
@@ -342,13 +345,11 @@ class _UserProfileScreenState extends State<UserProfileScreen> {
         }
       }
 
-      // 2) Actualiza displayName y photoURL
       await user.updateDisplayName(_nameCtrl.text.trim());
       if (_photoUrl != null && _photoUrl!.isNotEmpty) {
         await user.updatePhotoURL(_photoUrl);
       }
 
-      // 3) Guarda en Firestore
       await _db.collection('users').doc(user.uid).set({
         'name': _nameCtrl.text.trim(),
         'phone': _phoneCtrl.text.trim(),
@@ -401,7 +402,6 @@ class _UserProfileScreenState extends State<UserProfileScreen> {
 
       setState(() => _photoUrl = url);
 
-      // Actualiza Firestore + Auth
       await _db.collection('users').doc(user.uid).set(
         {'photoUrl': url, 'updatedAt': FieldValue.serverTimestamp()},
         SetOptions(merge: true),
@@ -426,9 +426,7 @@ class _UserProfileScreenState extends State<UserProfileScreen> {
     if (user == null) return;
     try {
       await _storage.ref('users/${user.uid}/profile.jpg').delete();
-    } catch (_) {
-      // si no existía, ignoramos
-    }
+    } catch (_) {}
     await _db.collection('users').doc(user.uid).set(
       {'photoUrl': null, 'updatedAt': FieldValue.serverTimestamp()},
       SetOptions(merge: true),
@@ -451,9 +449,7 @@ class _UserProfileScreenState extends State<UserProfileScreen> {
     try {
       await _auth.sendPasswordResetEmail(email: email);
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-            content: Text(
-                'Te enviamos un correo para restablecer la contraseña a $email')),
+        SnackBar(content: Text('Te enviamos un correo a $email')),
       );
     } catch (e) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -482,7 +478,6 @@ class _UserProfileScreenState extends State<UserProfileScreen> {
     try {
       await _auth.signOut();
       if (!mounted) return;
-      // ✅ Volver a la raíz controlada por AuthGate
       Navigator.of(context).pushNamedAndRemoveUntil('/', (route) => false);
     } catch (e) {
       if (!mounted) return;
@@ -560,376 +555,433 @@ class _UserProfileScreenState extends State<UserProfileScreen> {
   @override
   Widget build(BuildContext context) {
     final isVerified = _auth.currentUser?.emailVerified ?? false;
+    final w = MediaQuery.of(context).size.width;
+    final avatarSize = (w * 0.60).clamp(160.0, 300.0); // ~60% del ancho
 
-    return Scaffold(
-      key: _scaffoldKey,
-      drawer: const CustomDrawer(),
-
-      appBar: CapfiscalTopBar(
-        onMenu: () => _scaffoldKey.currentState?.openDrawer(),
-        onRefresh: () async {
-          await _reloadAuthUser();
-          await _loadProfile();
-        },
-        onProfile: () {}, // ya estamos aquí
+    return Container(
+      decoration: const BoxDecoration(
+        gradient: LinearGradient(
+          colors: [_CapColors.bgBottom, _CapColors.bgMid, _CapColors.bgTop],
+          stops: [0.0, 0.45, 1.0],
+          begin: Alignment.bottomCenter,
+          end: Alignment.topCenter,
+        ),
       ),
+      child: Scaffold(
+        key: _scaffoldKey,
+        backgroundColor: Colors.transparent,
+        drawer: const CustomDrawer(),
 
-      body: _loading
-          ? const Center(child: CircularProgressIndicator())
-          : SingleChildScrollView(
-              padding: const EdgeInsets.only(bottom: 16),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  // Regresar + Cerrar sesión
-                  Container(
-                    color: Colors.white,
-                    padding: const EdgeInsets.fromLTRB(12, 12, 12, 6),
-                    child: Row(
-                      children: [
-                        const Icon(Icons.arrow_back, size: 18),
-                        const SizedBox(width: 6),
-                        TextButton(
-                          style: TextButton.styleFrom(
-                              padding: EdgeInsets.zero,
-                              minimumSize: const Size(0, 0)),
-                          onPressed: () => Navigator.of(context).maybePop(),
-                          child: const Text('Regresar',
-                              style: TextStyle(color: Colors.black87)),
-                        ),
-                        const Spacer(),
-                        TextButton.icon(
-                          onPressed: _signingOut ? null : _confirmSignOut,
-                          icon: _signingOut
-                              ? const SizedBox(
-                                  width: 16,
-                                  height: 16,
-                                  child:
-                                      CircularProgressIndicator(strokeWidth: 2))
-                              : const Icon(Icons.logout,
-                                  color: Color(0xFF6B1A1A)),
-                          label: const Text(
-                            'Cerrar sesión',
-                            style: TextStyle(color: Color(0xFF6B1A1A)),
-                          ),
-                        )
-                      ],
-                    ),
-                  ),
+        appBar: CapfiscalTopBar(
+          onMenu: () => _scaffoldKey.currentState?.openDrawer(),
+          onRefresh: () async {
+            await _reloadAuthUser();
+            await _loadProfile();
+          },
+          onProfile: () {},
+        ),
 
-                  // Título
-                  Padding(
-                    padding: const EdgeInsets.fromLTRB(16, 6, 16, 6),
-                    child: Text(
-                      'MI PERFIL',
-                      style:
-                          Theme.of(context).textTheme.headlineSmall?.copyWith(
-                                fontWeight: FontWeight.w800,
-                                letterSpacing: .5,
-                                color: const Color(0xFF6B1A1A),
-                              ),
-                      textAlign: TextAlign.left,
-                    ),
-                  ),
-
-                  // Banner verificación
-                  if (!isVerified)
+        body: _loading
+            ? const Center(
+                child: CircularProgressIndicator(
+                  valueColor: AlwaysStoppedAnimation<Color>(_CapColors.gold),
+                ),
+              )
+            : SingleChildScrollView(
+                padding: const EdgeInsets.only(bottom: 16),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    // Back + cerrar sesión (oscuro)
                     Padding(
-                      padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
-                      child: MaterialBanner(
-                        backgroundColor: const Color(0xFFFFF3CD),
-                        content: const Text(
-                            'Tu correo no está verificado. Verifica para mejorar la seguridad de tu cuenta.'),
-                        leading: const Icon(Icons.info_outline),
-                        actions: [
-                          TextButton(
-                            onPressed: _sendEmailVerification,
-                            child: const Text('ENVIAR VERIFICACIÓN'),
+                      padding: const EdgeInsets.fromLTRB(12, 12, 12, 6),
+                      child: Row(
+                        children: [
+                          InkWell(
+                            onTap: () => Navigator.of(context).maybePop(),
+                            borderRadius: BorderRadius.circular(20),
+                            child: Container(
+                              padding: const EdgeInsets.all(6),
+                              decoration: BoxDecoration(
+                                color: Colors.white.withOpacity(.08),
+                                borderRadius: BorderRadius.circular(20),
+                              ),
+                              child: const Icon(Icons.arrow_back,
+                                  size: 18, color: _CapColors.text),
+                            ),
                           ),
-                          TextButton(
-                            onPressed: _reloadAuthUser,
-                            child: const Text('YA VERIFIQUÉ'),
+                          const SizedBox(width: 8),
+                          const Text('Regresar',
+                              style: TextStyle(
+                                  color: _CapColors.text,
+                                  fontWeight: FontWeight.w600)),
+                          const Spacer(),
+                          OutlinedButton.icon(
+                            style: OutlinedButton.styleFrom(
+                              side:
+                                  const BorderSide(color: _CapColors.goldDark),
+                              foregroundColor: _CapColors.gold,
+                              backgroundColor: _CapColors.surface,
+                              padding: const EdgeInsets.symmetric(
+                                  horizontal: 10, vertical: 8),
+                            ),
+                            onPressed: _signingOut ? null : _confirmSignOut,
+                            icon: _signingOut
+                                ? const SizedBox(
+                                    width: 16,
+                                    height: 16,
+                                    child: CircularProgressIndicator(
+                                        strokeWidth: 2),
+                                  )
+                                : const Icon(Icons.logout_rounded, size: 18),
+                            label: const Text('Cerrar sesión'),
                           ),
                         ],
                       ),
                     ),
 
-                  // Avatar + botón EDITAR
-                  Padding(
-                    padding: const EdgeInsets.symmetric(vertical: 12),
-                    child: Center(
-                      child: Column(
-                        mainAxisSize: MainAxisSize.min,
+                    // Título dorado centrado
+                    Padding(
+                      padding: const EdgeInsets.fromLTRB(16, 2, 16, 6),
+                      child: Center(
+                        child: Text(
+                          'PERFIL',
+                          style: Theme.of(context)
+                              .textTheme
+                              .headlineSmall
+                              ?.copyWith(
+                                color: _CapColors.gold,
+                                fontWeight: FontWeight.w900,
+                                letterSpacing: .6,
+                              ),
+                        ),
+                      ),
+                    ),
+
+                    // Banner verificación
+                    if (!isVerified)
+                      Padding(
+                        padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+                        child: MaterialBanner(
+                          backgroundColor: const Color(0xFFFFF3CD),
+                          content: const Text(
+                              'Tu correo no está verificado. Verifica para mejorar la seguridad de tu cuenta.'),
+                          leading: const Icon(Icons.info_outline),
+                          actions: [
+                            TextButton(
+                              onPressed: _sendEmailVerification,
+                              child: const Text('ENVIAR VERIFICACIÓN'),
+                            ),
+                            TextButton(
+                              onPressed: _reloadAuthUser,
+                              child: const Text('YA VERIFIQUÉ'),
+                            ),
+                          ],
+                        ),
+                      ),
+
+                    // Avatar gigante (~60% ancho) con botón de edición
+                    Padding(
+                      padding: const EdgeInsets.only(top: 8, bottom: 16),
+                      child: Center(
+                        child: Stack(
+                          alignment: Alignment.center,
+                          children: [
+                            // Círculo dorado de fondo
+                            Container(
+                              width: avatarSize,
+                              height: avatarSize,
+                              decoration: const BoxDecoration(
+                                shape: BoxShape.circle,
+                                gradient: LinearGradient(
+                                  colors: [
+                                    _CapColors.gold,
+                                    _CapColors.goldDark
+                                  ],
+                                  begin: Alignment.topLeft,
+                                  end: Alignment.bottomRight,
+                                ),
+                              ),
+                            ),
+                            // Foto (si hay), recortada
+                            ClipOval(
+                              child: Container(
+                                width: avatarSize * 0.86,
+                                height: avatarSize * 0.86,
+                                color: _CapColors.surfaceAlt,
+                                child: _photoUrl == null
+                                    ? const Center(
+                                        child: Icon(Icons.person,
+                                            color: Colors.black, size: 80),
+                                      )
+                                    : Image.network(
+                                        _photoUrl!,
+                                        fit: BoxFit.cover,
+                                        errorBuilder: (_, __, ___) =>
+                                            const Center(
+                                          child: Icon(Icons.person,
+                                              color: Colors.black, size: 80),
+                                        ),
+                                      ),
+                              ),
+                            ),
+                            // Botón blanco de editar (abajo-derecha)
+                            Positioned(
+                              right: avatarSize * 0.14 * 0.20,
+                              bottom: avatarSize * 0.14 * 0.20,
+                              child: GestureDetector(
+                                onTapDown: (d) =>
+                                    _showAvatarMenu(d.globalPosition),
+                                child: Container(
+                                  width: 32,
+                                  height: 32,
+                                  decoration: BoxDecoration(
+                                    color: Colors.white,
+                                    shape: BoxShape.circle,
+                                    boxShadow: [
+                                      BoxShadow(
+                                        color: Colors.black.withOpacity(.25),
+                                        blurRadius: 6,
+                                        offset: const Offset(0, 2),
+                                      )
+                                    ],
+                                  ),
+                                  child: const Icon(Icons.edit, size: 18),
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+
+                    // ==== Campos de perfil (labels blancos + campos gris claro) ====
+                    _ProfileField(
+                      icon: Icons.person,
+                      label: 'Nombre',
+                      controller: _nameCtrl,
+                      enabled: _editing,
+                    ),
+                    _ProfileField(
+                      icon: Icons.mail,
+                      label: 'E-mail',
+                      controller: _emailCtrl,
+                      keyboardType: TextInputType.emailAddress,
+                      enabled: _editing,
+                    ),
+                    _ProfileField(
+                      icon: Icons.phone,
+                      label: 'Teléfono',
+                      controller: _phoneCtrl,
+                      keyboardType: TextInputType.phone,
+                      enabled: _editing,
+                    ),
+                    _ProfileField(
+                      icon: Icons.location_city,
+                      label: 'Estado / Ciudad',
+                      controller: _cityCtrl,
+                      enabled: _editing,
+                    ),
+
+                    // Botones Editar / Guardar
+                    Padding(
+                      padding: const EdgeInsets.fromLTRB(16, 4, 16, 12),
+                      child: Row(
                         children: [
-                          CircleAvatar(
-                            radius: 46,
-                            backgroundColor: Colors.black12,
-                            backgroundImage: _photoUrl != null
-                                ? NetworkImage(_photoUrl!)
-                                : null,
-                            child: _photoUrl == null
-                                ? const Icon(Icons.person,
-                                    size: 46, color: Colors.black45)
-                                : null,
+                          if (!_editing)
+                            Expanded(
+                              child: OutlinedButton.icon(
+                                style: OutlinedButton.styleFrom(
+                                  side: const BorderSide(
+                                      color: _CapColors.goldDark),
+                                  foregroundColor: _CapColors.gold,
+                                  backgroundColor: _CapColors.surface,
+                                ),
+                                onPressed: () =>
+                                    setState(() => _editing = true),
+                                icon: const Icon(Icons.edit),
+                                label: const Text('Editar'),
+                              ),
+                            ),
+                          if (_editing) ...[
+                            Expanded(
+                              child: OutlinedButton(
+                                style: OutlinedButton.styleFrom(
+                                  foregroundColor: _CapColors.text,
+                                  side: const BorderSide(color: Colors.white24),
+                                ),
+                                onPressed: () {
+                                  setState(() => _editing = false);
+                                  _loadProfile(); // descarta cambios
+                                },
+                                child: const Text('Cancelar'),
+                              ),
+                            ),
+                            const SizedBox(width: 12),
+                            Expanded(
+                              child: ElevatedButton.icon(
+                                style: ElevatedButton.styleFrom(
+                                  backgroundColor: _CapColors.gold,
+                                  foregroundColor: Colors.black,
+                                ),
+                                onPressed: _saving ? null : _saveProfile,
+                                icon: _saving
+                                    ? const SizedBox(
+                                        width: 16,
+                                        height: 16,
+                                        child: CircularProgressIndicator(
+                                            strokeWidth: 2,
+                                            color: Colors.black),
+                                      )
+                                    : const Icon(Icons.save),
+                                label: const Text('Guardar'),
+                              ),
+                            ),
+                          ],
+                        ],
+                      ),
+                    ),
+
+                    // ===== Suscripción =====
+                    Padding(
+                      padding: const EdgeInsets.fromLTRB(16, 8, 16, 8),
+                      child: Text(
+                        'DATOS DE LA SUSCRIPCIÓN',
+                        style:
+                            Theme.of(context).textTheme.titleMedium?.copyWith(
+                                  color: _CapColors.gold,
+                                  fontWeight: FontWeight.w800,
+                                ),
+                      ),
+                    ),
+                    _SubscriptionRow(
+                        label: 'FECHA DE INICIO', value: _fmtDate(_startDate)),
+                    _SubscriptionRow(
+                        label: 'FECHA DE TÉRMINO', value: _fmtDate(_endDate)),
+                    _SubscriptionRow(
+                        label: 'MÉTODO DE PAGO', value: _paymentMethod ?? '--'),
+
+                    // ===== Favoritos =====
+                    Padding(
+                      padding: const EdgeInsets.fromLTRB(16, 16, 16, 6),
+                      child: Text(
+                        'MIS FAVORITOS',
+                        style:
+                            Theme.of(context).textTheme.titleMedium?.copyWith(
+                                  color: _CapColors.gold,
+                                  fontWeight: FontWeight.w800,
+                                ),
+                      ),
+                    ),
+                    if (_loadingFavs)
+                      const Padding(
+                        padding: EdgeInsets.all(16),
+                        child: Center(
+                          child: CircularProgressIndicator(
+                            valueColor:
+                                AlwaysStoppedAnimation<Color>(_CapColors.gold),
                           ),
-                          const SizedBox(height: 8),
-                          GestureDetector(
-                            onTapDown: (d) => _showAvatarMenu(d.globalPosition),
-                            child: Row(
-                              mainAxisSize: MainAxisSize.min,
-                              children: const [
-                                Icon(Icons.edit,
-                                    size: 16, color: Color(0xFF6B1A1A)),
-                                SizedBox(width: 4),
-                                Text(
-                                  'EDITAR',
-                                  style: TextStyle(
-                                    fontSize: 12,
-                                    color: Colors.black54,
+                        ),
+                      )
+                    else ...[
+                      // Docs
+                      Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 12),
+                        child: _FavCard(
+                          title: 'Documentos',
+                          child: _favDocs.isEmpty
+                              ? const Padding(
+                                  padding: EdgeInsets.all(16.0),
+                                  child: Text(
+                                    'No tienes documentos favoritos',
+                                    style:
+                                        TextStyle(color: _CapColors.textMuted),
+                                  ),
+                                )
+                              : SizedBox(
+                                  height: 150,
+                                  child: ListView.separated(
+                                    scrollDirection: Axis.horizontal,
+                                    physics: const BouncingScrollPhysics(),
+                                    padding:
+                                        const EdgeInsets.fromLTRB(8, 8, 8, 12),
+                                    itemCount: _favDocs.length,
+                                    separatorBuilder: (_, __) =>
+                                        const SizedBox(width: 10),
+                                    itemBuilder: (ctx, i) {
+                                      final ref = _favDocs[i];
+                                      return SizedBox(
+                                        width: 150,
+                                        child: _DocTile(
+                                          name: ref.name,
+                                          onTap: () =>
+                                              _downloadAndOpenFile(ref),
+                                        ),
+                                      );
+                                    },
                                   ),
                                 ),
-                              ],
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                  ),
-
-                  // Campos de perfil
-                  const SizedBox(height: 6),
-                  _ProfileField(
-                    icon: Icons.person,
-                    label: 'NOMBRE',
-                    controller: _nameCtrl,
-                    enabled: _editing,
-                  ),
-                  _ProfileField(
-                    icon: Icons.phone,
-                    label: 'TELEFONO',
-                    controller: _phoneCtrl,
-                    keyboardType: TextInputType.phone,
-                    enabled: _editing,
-                  ),
-                  _ProfileField(
-                    icon: Icons.mail,
-                    label: 'CORREO',
-                    controller: _emailCtrl,
-                    keyboardType: TextInputType.emailAddress,
-                    enabled: _editing,
-                  ),
-                  _ProfileField(
-                    icon: Icons.location_city,
-                    label: 'CIUDAD',
-                    controller: _cityCtrl,
-                    enabled: _editing,
-                  ),
-
-                  // Botones Editar / Guardar
-                  Padding(
-                    padding: const EdgeInsets.fromLTRB(16, 4, 16, 12),
-                    child: Row(
-                      children: [
-                        if (!_editing)
-                          Expanded(
-                            child: OutlinedButton.icon(
-                              onPressed: () => setState(() => _editing = true),
-                              icon: const Icon(Icons.edit),
-                              label: const Text('Editar'),
-                            ),
-                          ),
-                        if (_editing) ...[
-                          Expanded(
-                            child: OutlinedButton(
-                              onPressed: () => setState(() {
-                                _editing = false;
-                                _loadProfile(); // descartar cambios
-                              }),
-                              child: const Text('Cancelar'),
-                            ),
-                          ),
-                          const SizedBox(width: 12),
-                          Expanded(
-                            child: ElevatedButton.icon(
-                              style: ElevatedButton.styleFrom(
-                                  backgroundColor: const Color(0xFF6B1A1A)),
-                              onPressed: _saving ? null : _saveProfile,
-                              icon: _saving
-                                  ? const SizedBox(
-                                      width: 16,
-                                      height: 16,
-                                      child: CircularProgressIndicator(
-                                          strokeWidth: 2, color: Colors.white),
-                                    )
-                                  : const Icon(Icons.save),
-                              label: const Text('Guardar'),
-                            ),
-                          ),
-                        ],
-                      ],
-                    ),
-                  ),
-
-                  // Botón Cerrar sesión destacado (alternativo al header)
-                  Padding(
-                    padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
-                    child: ElevatedButton.icon(
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: Colors.white,
-                        foregroundColor: const Color(0xFF6B1A1A),
-                        side: const BorderSide(color: Color(0xFF6B1A1A)),
-                      ),
-                      onPressed: _signingOut ? null : _confirmSignOut,
-                      icon: const Icon(Icons.logout),
-                      label: const Text('Cerrar sesión'),
-                    ),
-                  ),
-                  // Botón Restablecer contraseña (para usar _sendPasswordReset y evitar el warning)
-                  if ((_auth.currentUser?.email ?? _emailCtrl.text.trim())
-                      .isNotEmpty)
-                    Padding(
-                      padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
-                      child: ElevatedButton.icon(
-                        style: ElevatedButton.styleFrom(
-                          backgroundColor: Colors.white,
-                          foregroundColor: const Color(0xFF6B1A1A),
-                          side: const BorderSide(color: Color(0xFF6B1A1A)),
                         ),
-                        onPressed: _sendPasswordReset,
-                        icon: const Icon(Icons.lock_reset),
-                        label: const Text('Restablecer contraseña'),
                       ),
-                    ),
-                  // Sección de suscripción
-                  Padding(
-                    padding: const EdgeInsets.fromLTRB(16, 8, 16, 8),
-                    child: Text(
-                      'DATOS DE LA SUSCRIPCIÓN',
-                      style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                            color: const Color(0xFF6B1A1A),
-                            fontWeight: FontWeight.w800,
-                          ),
-                    ),
-                  ),
-                  _SubscriptionRow(
-                      label: 'FECHA DE INICIO', value: _fmtDate(_startDate)),
-                  _SubscriptionRow(
-                      label: 'FECHA DE TÉRMINO', value: _fmtDate(_endDate)),
-                  _SubscriptionRow(
-                      label: 'MÉTODO DE PAGO', value: _paymentMethod ?? '--'),
-
-                  // ================== MIS FAVORITOS ==================
-                  Padding(
-                    padding: const EdgeInsets.fromLTRB(16, 16, 16, 6),
-                    child: Text(
-                      'MIS FAVORITOS',
-                      style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                            color: const Color(0xFF6B1A1A),
-                            fontWeight: FontWeight.w800,
-                          ),
-                    ),
-                  ),
-
-                  if (_loadingFavs)
-                    const Padding(
-                      padding: EdgeInsets.all(16),
-                      child: Center(child: CircularProgressIndicator()),
-                    )
-                  else ...[
-                    // ---- Documentos favoritos (carrusel horizontal) ----
-                    Padding(
-                      padding: const EdgeInsets.symmetric(horizontal: 12),
-                      child: _FavCard(
-                        title: 'Documentos',
-                        child: _favDocs.isEmpty
-                            ? const Padding(
-                                padding: EdgeInsets.all(16.0),
-                                child: Text('No tienes documentos favoritos'),
-                              )
-                            : SizedBox(
-                                height: 150,
-                                child: ListView.separated(
-                                  scrollDirection: Axis.horizontal,
-                                  physics: const BouncingScrollPhysics(),
-                                  padding:
-                                      const EdgeInsets.fromLTRB(8, 8, 8, 12),
-                                  itemCount: _favDocs.length,
-                                  separatorBuilder: (_, __) =>
-                                      const SizedBox(width: 10),
-                                  itemBuilder: (ctx, i) {
-                                    final ref = _favDocs[i];
-                                    return SizedBox(
-                                      width: 150,
-                                      child: _DocTile(
-                                        name: ref.name,
-                                        onTap: () => _downloadAndOpenFile(ref),
-                                      ),
-                                    );
-                                  },
+                      // Videos
+                      Padding(
+                        padding: const EdgeInsets.fromLTRB(12, 8, 12, 0),
+                        child: _FavCard(
+                          title: 'Videos',
+                          child: _favVideos.isEmpty
+                              ? const Padding(
+                                  padding: EdgeInsets.all(16.0),
+                                  child: Text(
+                                    'No tienes videos favoritos',
+                                    style:
+                                        TextStyle(color: _CapColors.textMuted),
+                                  ),
+                                )
+                              : SizedBox(
+                                  height: 130,
+                                  child: LayoutBuilder(
+                                    builder: (ctx, constraints) {
+                                      double cardWidth =
+                                          MediaQuery.of(ctx).size.width - 48;
+                                      if (cardWidth < 220) cardWidth = 220;
+                                      if (cardWidth > 340) cardWidth = 340;
+                                      return ListView.separated(
+                                        scrollDirection: Axis.horizontal,
+                                        physics: const BouncingScrollPhysics(),
+                                        padding: const EdgeInsets.fromLTRB(
+                                            8, 8, 8, 12),
+                                        itemCount: _favVideos.length,
+                                        separatorBuilder: (_, __) =>
+                                            const SizedBox(width: 10),
+                                        itemBuilder: (ctx, i) {
+                                          final v = _favVideos[i];
+                                          return SizedBox(
+                                            width: cardWidth,
+                                            child: _VideoTile(
+                                              title: v.title,
+                                              youtubeId: v.youtubeId,
+                                              description: v.description,
+                                              onTap: () {
+                                                Navigator.pushReplacementNamed(
+                                                    context, '/video');
+                                              },
+                                            ),
+                                          );
+                                        },
+                                      );
+                                    },
+                                  ),
                                 ),
-                              ),
+                        ),
                       ),
-                    ),
-
-                    // ---- Videos favoritos (carrusel horizontal) ----
-                    Padding(
-                      padding: const EdgeInsets.fromLTRB(12, 8, 12, 0),
-                      child: _FavCard(
-                        title: 'Videos',
-                        child: _favVideos.isEmpty
-                            ? const Padding(
-                                padding: EdgeInsets.all(16.0),
-                                child: Text('No tienes videos favoritos'),
-                              )
-                            : SizedBox(
-                                height: 130,
-                                child: LayoutBuilder(
-                                  builder: (ctx, constraints) {
-                                    // Ancho máximo por tarjeta (evita overflow en pantallas pequeñas)
-                                    double cardWidth =
-                                        MediaQuery.of(ctx).size.width - 48;
-                                    if (cardWidth < 220) cardWidth = 220;
-                                    if (cardWidth > 340) cardWidth = 340;
-
-                                    return ListView.separated(
-                                      scrollDirection: Axis.horizontal,
-                                      physics: const BouncingScrollPhysics(),
-                                      padding: const EdgeInsets.fromLTRB(
-                                          8, 8, 8, 12),
-                                      itemCount: _favVideos.length,
-                                      separatorBuilder: (_, __) =>
-                                          const SizedBox(width: 10),
-                                      itemBuilder: (ctx, i) {
-                                        final v = _favVideos[i];
-                                        return SizedBox(
-                                          width: cardWidth,
-                                          child: _VideoTile(
-                                            title: v.title,
-                                            youtubeId: v.youtubeId,
-                                            description: v.description,
-                                            onTap: () {
-                                              Navigator.pushReplacementNamed(
-                                                  context, '/video');
-                                            },
-                                          ),
-                                        );
-                                      },
-                                    );
-                                  },
-                                ),
-                              ),
-                      ),
-                    ),
+                    ],
+                    const SizedBox(height: 12),
                   ],
-
-                  const SizedBox(height: 12),
-                ],
+                ),
               ),
-            ),
 
-      // Bottom nav — usa navegación por defecto: ['/biblioteca','/video','/home','/chat']
-      bottomNavigationBar: const CapfiscalBottomNav(
-        currentIndex: 3, // Perfil
+        // Bottom nav — usa navegación por defecto: ['/biblioteca','/video','/home','/chat']
+        bottomNavigationBar: const CapfiscalBottomNav(currentIndex: 3),
       ),
     );
   }
@@ -959,7 +1011,7 @@ class _ProfileField extends StatelessWidget {
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Icon(icon, color: const Color(0xFF6B1A1A)),
+          Icon(icon, color: _CapColors.gold),
           const SizedBox(width: 10),
           Expanded(
             child: Column(
@@ -968,25 +1020,29 @@ class _ProfileField extends StatelessWidget {
                 Text(
                   label,
                   style: const TextStyle(
-                      fontSize: 12,
-                      color: Colors.black54,
-                      fontWeight: FontWeight.w600),
+                    fontSize: 13,
+                    color: _CapColors.text,
+                    fontWeight: FontWeight.w700,
+                  ),
                 ),
                 const SizedBox(height: 6),
                 TextField(
                   controller: controller,
                   enabled: enabled,
                   keyboardType: keyboardType,
+                  style: const TextStyle(color: _CapColors.text),
                   decoration: InputDecoration(
                     isDense: true,
                     contentPadding: const EdgeInsets.symmetric(
                         horizontal: 12, vertical: 12),
                     filled: true,
-                    fillColor: const Color(0xFFE7E7E7),
+                    fillColor: _CapColors.field,
                     border: OutlineInputBorder(
-                      borderRadius: BorderRadius.circular(6),
+                      borderRadius: BorderRadius.circular(8),
                       borderSide: BorderSide.none,
                     ),
+                    hintText: 'Descripción',
+                    hintStyle: const TextStyle(color: Colors.white),
                   ),
                 ),
               ],
@@ -1014,22 +1070,26 @@ class _SubscriptionRow extends StatelessWidget {
             child: Text(
               label,
               style: const TextStyle(
-                  fontSize: 12,
-                  color: Colors.black54,
-                  fontWeight: FontWeight.w600),
+                fontSize: 12,
+                color: _CapColors.text,
+                fontWeight: FontWeight.w700,
+              ),
             ),
           ),
           const SizedBox(width: 12),
           Expanded(
             child: Container(
-              height: 56,
+              height: 48,
               alignment: Alignment.centerLeft,
               padding: const EdgeInsets.symmetric(horizontal: 12),
               decoration: BoxDecoration(
-                color: const Color(0xFFE7E7E7),
-                borderRadius: BorderRadius.circular(6),
+                color: _CapColors.field,
+                borderRadius: BorderRadius.circular(8),
               ),
-              child: Text(value, style: const TextStyle(fontSize: 14)),
+              child: Text(
+                value,
+                style: const TextStyle(color: _CapColors.text, fontSize: 14),
+              ),
             ),
           ),
         ],
@@ -1038,7 +1098,7 @@ class _SubscriptionRow extends StatelessWidget {
   }
 }
 
-// ---- Tarjetas y tiles de Favoritos ----
+// ---- Tarjetas y tiles de Favoritos (tema oscuro + dorado) ----
 
 class _FavCard extends StatelessWidget {
   const _FavCard({required this.title, required this.child});
@@ -1051,7 +1111,7 @@ class _FavCard extends StatelessWidget {
     return Card(
       elevation: 0,
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-      color: Colors.white,
+      color: _CapColors.surface,
       child: Padding(
         padding: const EdgeInsets.fromLTRB(12, 10, 12, 12),
         child: Column(
@@ -1061,7 +1121,7 @@ class _FavCard extends StatelessWidget {
                 style: const TextStyle(
                   fontWeight: FontWeight.w800,
                   fontSize: 16,
-                  color: Color(0xFF6B1A1A),
+                  color: _CapColors.gold,
                 )),
             const SizedBox(height: 8),
             child,
@@ -1090,21 +1150,24 @@ class _DocTile extends StatelessWidget {
         clipBehavior: Clip.hardEdge,
         padding: const EdgeInsets.all(12),
         decoration: BoxDecoration(
-          color: const Color(0xFFF9F9F9),
+          color: _CapColors.surfaceAlt,
           borderRadius: BorderRadius.circular(12),
-          border: Border.all(color: Colors.black12),
+          border: Border.all(color: Colors.white12),
         ),
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            const Icon(Icons.description, size: 40, color: Color(0xFF6B1A1A)),
+            const Icon(Icons.description, size: 40, color: _CapColors.gold),
             const SizedBox(height: 8),
             Text(
               name,
               maxLines: 2,
               overflow: TextOverflow.ellipsis,
               textAlign: TextAlign.center,
-              style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600),
+              style: const TextStyle(
+                  fontSize: 13,
+                  fontWeight: FontWeight.w600,
+                  color: _CapColors.text),
             ),
           ],
         ),
@@ -1150,20 +1213,12 @@ class _VideoTile extends StatelessWidget {
       child: Container(
         clipBehavior: Clip.hardEdge,
         decoration: BoxDecoration(
-          color: Colors.white,
+          color: _CapColors.surfaceAlt,
           borderRadius: BorderRadius.circular(12),
-          border: Border.all(color: Colors.black12),
-          boxShadow: const [
-            BoxShadow(
-              color: Colors.black12,
-              blurRadius: 2,
-              offset: Offset(0, 1),
-            )
-          ],
+          border: Border.all(color: Colors.white12),
         ),
         child: Row(
           children: [
-            // Miniatura con aspecto fijo para evitar desbordes
             ClipRRect(
               borderRadius: const BorderRadius.only(
                 topLeft: Radius.circular(12),
@@ -1177,16 +1232,16 @@ class _VideoTile extends StatelessWidget {
                     _thumb,
                     fit: BoxFit.cover,
                     errorBuilder: (_, __, ___) => Container(
-                      color: const Color(0xFFE7E7E7),
+                      color: const Color(0xFF3A3A3F),
                       alignment: Alignment.center,
-                      child: const Icon(Icons.image_not_supported),
+                      child: const Icon(Icons.image_not_supported,
+                          color: _CapColors.textMuted),
                     ),
                   ),
                 ),
               ),
             ),
             const SizedBox(width: 10),
-            // Texto
             Expanded(
               child: Padding(
                 padding: const EdgeInsets.fromLTRB(0, 10, 10, 10),
@@ -1198,6 +1253,7 @@ class _VideoTile extends StatelessWidget {
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
                       style: const TextStyle(
+                        color: _CapColors.text,
                         fontWeight: FontWeight.w800,
                         fontSize: 16,
                       ),
@@ -1207,15 +1263,16 @@ class _VideoTile extends StatelessWidget {
                       padding: const EdgeInsets.symmetric(
                           horizontal: 8, vertical: 6),
                       decoration: BoxDecoration(
-                        color: const Color(0xFFE7E7E7),
+                        color: _CapColors.surface,
                         borderRadius: BorderRadius.circular(6),
+                        border: Border.all(color: Colors.white12),
                       ),
                       child: Text(
                         description.isEmpty ? 'Descripción' : description,
                         maxLines: 2,
                         overflow: TextOverflow.ellipsis,
                         style: const TextStyle(
-                            fontSize: 12, color: Colors.black87),
+                            fontSize: 12, color: _CapColors.textMuted),
                       ),
                     ),
                   ],

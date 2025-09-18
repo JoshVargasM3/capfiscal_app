@@ -1,158 +1,258 @@
 // lib/widgets/custom_drawer.dart
 import 'package:flutter/material.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 
 class CustomDrawer extends StatelessWidget {
   const CustomDrawer({super.key});
 
-  static const _brand = Color(0xFF6B1A1A);
+  // 🎨 Paleta CAPFISCAL
+  static const _gold = Color(0xFFE1B85C);
+  static const _goldDark = Color(0xFFB88F30);
+  static const _text = Colors.white;
+  static const _textMuted = Color(0xFFBEBEC6);
+  static const _surface = Color(0xFF1C1C21);
+  static const _surfaceAlt = Color(0xFF2A2A2F);
 
   @override
   Widget build(BuildContext context) {
     final current = ModalRoute.of(context)?.settings.name;
+    final user = FirebaseAuth.instance.currentUser;
+
+    // Nombre visible (displayName > email local-part > "Usuario")
+    String displayName = (user?.displayName ?? '').trim();
+    if (displayName.isEmpty) {
+      final email = user?.email ?? '';
+      displayName = email.contains('@') ? email.split('@').first : 'Usuario';
+    }
+    displayName = displayName
+        .split(' ')
+        .where((p) => p.isNotEmpty)
+        .map((p) => p[0].toUpperCase() + p.substring(1))
+        .join(' ');
 
     void _go(String route) {
       Navigator.pop(context); // Cierra el drawer primero
-      if (current == route) return; // Ya estás ahí
+      if (current == route) return;
       Navigator.pushReplacementNamed(context, route);
     }
 
-    Widget tile({
+    Future<void> _signOut() async {
+      Navigator.pop(context);
+      await FirebaseAuth.instance.signOut();
+      // Ajusta si tu ruta de login es diferente
+      // ignore: use_build_context_synchronously
+      Navigator.pushNamedAndRemoveUntil(context, '/home', (r) => false);
+    }
+
+    Widget navItem({
       required IconData icon,
       required String title,
-      String? subtitle,
       required String route,
     }) {
       final bool selected = current == route;
-      return ListTile(
-        leading: Icon(icon, color: _brand),
-        title: Text(
-          title,
-          style: TextStyle(
-            fontWeight: selected ? FontWeight.w700 : FontWeight.w500,
-            color: selected ? _brand : Colors.black87,
+      return InkWell(
+        onTap: () => _go(route),
+        borderRadius: BorderRadius.circular(12),
+        splashColor: _gold.withOpacity(.12),
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+          decoration: BoxDecoration(
+            color: selected ? _surfaceAlt : Colors.transparent,
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(
+              color: selected ? _gold.withOpacity(.35) : Colors.white12,
+            ),
+          ),
+          child: Row(
+            children: [
+              Icon(icon, color: selected ? _gold : _text, size: 22),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Text(
+                  title,
+                  style: TextStyle(
+                    color: selected ? _gold : _text,
+                    fontWeight: selected ? FontWeight.w700 : FontWeight.w500,
+                  ),
+                ),
+              ),
+              Icon(Icons.chevron_right,
+                  color: selected ? _gold : _textMuted, size: 20),
+            ],
           ),
         ),
-        subtitle: subtitle != null ? Text(subtitle) : null,
-        selected: selected,
-        selectedTileColor: _brand.withOpacity(.10),
-        onTap: () => _go(route),
-        trailing: const Icon(Icons.chevron_right),
       );
     }
 
     return Drawer(
-      child: SafeArea(
-        child: Column(
-          children: [
-            // Encabezado con logo y nombre
-            Container(
-              width: double.infinity,
-              padding: const EdgeInsets.fromLTRB(16, 20, 16, 20),
-              decoration: const BoxDecoration(
-                color: Colors.white,
-                border: Border(
-                  bottom: BorderSide(color: Color(0x22000000)),
+      elevation: 16,
+      width:
+          MediaQuery.of(context).size.width * 0.50, // 🔥 ahora al 50% del ancho
+      child: Container(
+        decoration: const BoxDecoration(
+          gradient: LinearGradient(
+            colors: [Color(0xFF0A0A0B), Color(0xFF2A2A2F)],
+            begin: Alignment.topLeft,
+            end: Alignment.bottomRight,
+          ),
+        ),
+        child: SafeArea(
+          child: Column(
+            children: [
+              // ===== Encabezado con avatar grande + info a la derecha =====
+              Stack(
+                children: [
+                  Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.fromLTRB(18, 18, 18, 22),
+                    decoration: const BoxDecoration(
+                      gradient: LinearGradient(
+                        colors: [Color(0xFF141416), Color(0xFF1E1E23)],
+                        begin: Alignment.topLeft,
+                        end: Alignment.bottomRight,
+                      ),
+                      border: Border(
+                        bottom: BorderSide(color: Color(0x33E1B85C), width: 1),
+                      ),
+                    ),
+                    child: Row(
+                      crossAxisAlignment: CrossAxisAlignment.center,
+                      children: [
+                        // Avatar más grande
+                        CircleAvatar(
+                          radius: 50,
+                          backgroundColor: _surfaceAlt,
+                          backgroundImage: (user?.photoURL != null &&
+                                  user!.photoURL!.isNotEmpty)
+                              ? NetworkImage(user.photoURL!)
+                              : null,
+                          child: (user?.photoURL == null ||
+                                  (user?.photoURL?.isEmpty ?? true))
+                              ? const Icon(Icons.person, color: _text, size: 60)
+                              : null,
+                        ),
+                        const SizedBox(width: 16),
+                        // Info a la derecha
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              const Text(
+                                '¡Saludos Colega!',
+                                style: TextStyle(
+                                  color: _textMuted,
+                                  fontSize: 12,
+                                ),
+                              ),
+                              const SizedBox(height: 4),
+                              Text(
+                                displayName.toUpperCase(),
+                                maxLines: 2,
+                                overflow: TextOverflow.ellipsis,
+                                style: const TextStyle(
+                                  color: _gold,
+                                  fontSize: 22,
+                                  fontWeight: FontWeight.w900,
+                                  letterSpacing: .6,
+                                ),
+                              ),
+                              if (user?.email != null) ...[
+                                const SizedBox(height: 2),
+                                Text(
+                                  user!.email!,
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: const TextStyle(
+                                    color: _textMuted,
+                                    fontSize: 11,
+                                  ),
+                                ),
+                              ]
+                            ],
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  // Botón X para cerrar
+                  Positioned(
+                    right: 6,
+                    top: 6,
+                    child: IconButton(
+                      tooltip: 'Cerrar',
+                      onPressed: () => Navigator.pop(context),
+                      icon: const Icon(Icons.close, color: _text),
+                    ),
+                  ),
+                ],
+              ),
+
+              // ===== Opciones =====
+              Expanded(
+                child: ListView(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 14, vertical: 14),
+                  children: [
+                    navItem(
+                        icon: Icons.home_rounded,
+                        title: 'Inicio',
+                        route: '/home'),
+                    const SizedBox(height: 10),
+                    navItem(
+                        icon: Icons.library_books_rounded,
+                        title: 'Documentos',
+                        route: '/biblioteca'),
+                    const SizedBox(height: 10),
+                    navItem(
+                        icon: Icons.ondemand_video_rounded,
+                        title: 'Videos',
+                        route: '/video'),
+                    const SizedBox(height: 10),
+                    navItem(
+                        icon: Icons.favorite_rounded,
+                        title: 'Favoritos',
+                        route: '/perfil'),
+                    const SizedBox(height: 10),
+                    navItem(
+                        icon: Icons.chat_bubble_rounded,
+                        title: 'Chat',
+                        route: '/chat'),
+                    const SizedBox(height: 18),
+                    Container(height: 1, color: Colors.white12),
+                    const SizedBox(height: 18),
+                    navItem(
+                        icon: Icons.person_rounded,
+                        title: 'Perfil',
+                        route: '/perfil'),
+                  ],
                 ),
               ),
-              child: Row(
-                children: [
-                  // Logo
-                  Container(
-                    width: 48,
-                    height: 48,
-                    decoration: BoxDecoration(
-                      color: const Color(0xFFE7E7E7),
-                      borderRadius: BorderRadius.circular(8),
-                    ),
-                    clipBehavior: Clip.antiAlias,
-                    child: Image.asset(
-                      'assets/capfiscal_logo.png',
-                      fit: BoxFit.contain,
-                    ),
-                  ),
-                  const SizedBox(width: 12),
-                  // Título app
-                  Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: const [
-                      Text(
-                        'CAPFISCAL',
-                        style: TextStyle(
-                          color: _brand,
-                          fontWeight: FontWeight.w800,
-                          fontSize: 18,
-                          letterSpacing: .3,
-                        ),
-                      ),
-                      SizedBox(height: 2),
-                      Text(
-                        'Biblioteca & Capacitación',
-                        style: TextStyle(
-                          color: Colors.black54,
-                          fontSize: 12,
-                        ),
-                      ),
-                    ],
-                  ),
-                ],
-              ),
-            ),
 
-            // Opciones
-            Expanded(
-              child: ListView(
-                padding: const EdgeInsets.only(top: 8),
-                children: [
-                  tile(
-                    icon: Icons.home_rounded,
-                    title: 'Inicio',
-                    subtitle: 'Explora novedades',
-                    route: '/home',
-                  ),
-                  const Divider(height: 8),
-                  tile(
-                    icon: Icons.library_books_rounded,
-                    title: 'Biblioteca Legal',
-                    subtitle: 'Documentos disponibles',
-                    route: '/biblioteca',
-                  ),
-                  tile(
-                    icon: Icons.ondemand_video_rounded,
-                    title: 'Videos',
-                    subtitle: 'Reproductor de videos',
-                    route: '/video',
-                  ),
-                  tile(
-                    icon: Icons.chat_bubble_rounded,
-                    title: 'Chat',
-                    subtitle: 'Centro de mensajería',
-                    route: '/chat',
-                  ),
-                  tile(
-                    icon: Icons.person_rounded,
-                    title: 'Perfil',
-                    subtitle: 'Mis datos y suscripción',
-                    route: '/perfil',
-                  ),
-                ],
+              // ===== Pie: Cerrar sesión =====
+              Padding(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.end,
+                  children: [
+                    OutlinedButton.icon(
+                      style: OutlinedButton.styleFrom(
+                        side: const BorderSide(color: _goldDark, width: 1),
+                        foregroundColor: _gold,
+                        backgroundColor: _surface,
+                      ),
+                      onPressed: _signOut,
+                      icon: const Icon(Icons.logout_rounded, size: 18),
+                      label: const Text(
+                        'Cerrar Sesión',
+                        style: TextStyle(fontWeight: FontWeight.w700),
+                      ),
+                    ),
+                  ],
+                ),
               ),
-            ),
-
-            // Pie con versión o créditos (opcional)
-            Padding(
-              padding: const EdgeInsets.fromLTRB(16, 4, 16, 12),
-              child: Row(
-                children: const [
-                  Icon(Icons.info_outline, size: 16, color: Colors.black45),
-                  SizedBox(width: 8),
-                  Text(
-                    'v1.0.0',
-                    style: TextStyle(color: Colors.black45, fontSize: 12),
-                  ),
-                ],
-              ),
-            )
-          ],
+            ],
+          ),
         ),
       ),
     );

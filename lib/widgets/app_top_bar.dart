@@ -8,7 +8,6 @@ class CapfiscalTopBar extends StatelessWidget implements PreferredSizeWidget {
     required this.onRefresh,
     required this.onProfile,
     this.logoAsset = 'assets/capfiscal_logo.png',
-    this.backgroundColor = const Color(0xFF6B1A1A),
     this.showRefresh = true,
   });
 
@@ -16,7 +15,6 @@ class CapfiscalTopBar extends StatelessWidget implements PreferredSizeWidget {
   final VoidCallback onRefresh;
   final VoidCallback onProfile;
   final String logoAsset;
-  final Color backgroundColor;
   final bool showRefresh;
 
   @override
@@ -25,7 +23,17 @@ class CapfiscalTopBar extends StatelessWidget implements PreferredSizeWidget {
   @override
   Widget build(BuildContext context) {
     return Container(
-      color: backgroundColor,
+      decoration: const BoxDecoration(
+        gradient: LinearGradient(
+          colors: [Color(0xFF0A0A0B), Color(0xFF2A2A2F)],
+          begin: Alignment.topCenter,
+          end: Alignment.bottomCenter,
+        ),
+        border: Border(
+          bottom: BorderSide(
+              color: Color(0x33E1B85C), width: 1), // línea dorada tenue
+        ),
+      ),
       padding: const EdgeInsets.only(top: 8),
       child: SafeArea(
         bottom: false,
@@ -33,10 +41,17 @@ class CapfiscalTopBar extends StatelessWidget implements PreferredSizeWidget {
           height: 56,
           child: Row(
             children: [
+              // Botón menú
               IconButton(
                 onPressed: onMenu,
-                icon: const Icon(Icons.menu, color: Colors.white),
+                splashRadius: 22,
+                icon: const Icon(
+                  Icons.menu,
+                  color: Color(0xFFE1B85C), // dorado
+                  size: 26,
+                ),
               ),
+              // Logo centrado
               Expanded(
                 child: Center(
                   child: SizedBox(
@@ -47,24 +62,38 @@ class CapfiscalTopBar extends StatelessWidget implements PreferredSizeWidget {
                       errorBuilder: (_, __, ___) => const Text(
                         'CAPFISCAL',
                         style: TextStyle(
-                          color: Colors.white,
+                          color: Color(0xFFE1B85C),
                           fontWeight: FontWeight.w700,
+                          fontSize: 16,
+                          letterSpacing: 1.2,
                         ),
                       ),
                     ),
                   ),
                 ),
               ),
+              // Botón refrescar opcional
               if (showRefresh)
                 IconButton(
                   tooltip: 'Actualizar',
                   onPressed: onRefresh,
-                  icon: const Icon(Icons.refresh, color: Colors.white),
+                  splashRadius: 22,
+                  icon: const Icon(
+                    Icons.refresh,
+                    color: Color(0xFFE1B85C),
+                    size: 24,
+                  ),
                 ),
+              // Botón perfil
               IconButton(
                 tooltip: 'Perfil',
                 onPressed: onProfile,
-                icon: const Icon(Icons.person, color: Colors.white),
+                splashRadius: 22,
+                icon: const Icon(
+                  Icons.person,
+                  color: Color(0xFFE1B85C),
+                  size: 26,
+                ),
               ),
             ],
           ),

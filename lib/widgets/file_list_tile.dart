@@ -1,4 +1,3 @@
-// lib/features/biblioteca/ui/widgets/file_list_tile.dart
 import 'package:flutter/material.dart';
 
 class FileListTile extends StatelessWidget {
@@ -8,92 +7,101 @@ class FileListTile extends StatelessWidget {
     required this.onTap,
     required this.isFavoriteFuture,
     required this.onToggleFavorite,
+    this.leadingSize = 56,
+    this.pdfIconColor = const Color(0xFFE1B85C), // DORADO SOLO para PDF
   });
 
   final String name;
   final VoidCallback onTap;
   final Future<bool> isFavoriteFuture;
   final Future<void> Function() onToggleFavorite;
+  final double leadingSize;
+  final Color pdfIconColor;
 
-  static const _lightGrey = Color(0xFFE7E7E7);
+  static const _surface = Color(0xFF1C1C21);
+  static const _surfaceAlt = Color(0xFF2A2A2F);
+  static const _text = Color(0xFFEFEFEF);
+  static const _muted = Color(0xFFBEBEC6);
 
   @override
   Widget build(BuildContext context) {
     return Material(
-      color: Colors.white,
+      color: Colors.transparent,
       child: InkWell(
         onTap: onTap,
         borderRadius: BorderRadius.circular(12),
-        child: Container(
-          padding: const EdgeInsets.all(12),
+        child: Ink(
           decoration: BoxDecoration(
+            color: _surface,
             borderRadius: BorderRadius.circular(12),
-            border: Border.all(color: Colors.black12),
+            border: Border.all(color: Colors.white12),
           ),
-          child: Row(
-            children: [
-              Container(
-                width: 52,
-                height: 52,
-                decoration: BoxDecoration(
-                  color: Colors.red.shade100,
-                  borderRadius: BorderRadius.circular(8),
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(10, 8, 4, 8),
+            child: Row(
+              children: [
+                // Ícono PDF (más grande y dorado)
+                Container(
+                  width: leadingSize,
+                  height: leadingSize,
+                  decoration: BoxDecoration(
+                    color: _surfaceAlt,
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                  child: Icon(Icons.picture_as_pdf,
+                      color: pdfIconColor, size: leadingSize * .6),
                 ),
-                alignment: Alignment.center,
-                child: Icon(Icons.picture_as_pdf,
-                    color: Colors.red.shade700, size: 34),
-              ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      name.toUpperCase(),
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(
-                          fontWeight: FontWeight.w800, fontSize: 16),
-                    ),
-                    const SizedBox(height: 8),
-                    Container(
-                      height: 32,
-                      decoration: BoxDecoration(
-                        color: _lightGrey,
-                        borderRadius: BorderRadius.circular(6),
+                const SizedBox(width: 12),
+                // Texto
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        _fileNameWithoutExt(name),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                          color: _text,
+                          fontWeight: FontWeight.w800,
+                          fontSize: 15,
+                        ),
                       ),
-                      alignment: Alignment.centerLeft,
-                      padding: const EdgeInsets.symmetric(horizontal: 10),
-                      child: const Text(
-                        'DESCRIPCIÓN',
-                        style: TextStyle(
-                            color: Colors.black54,
-                            fontSize: 12,
-                            fontWeight: FontWeight.w600),
+                      const SizedBox(height: 2),
+                      const Text(
+                        'Descripción',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(color: _muted, fontSize: 12),
                       ),
-                    ),
-                  ],
+                    ],
+                  ),
                 ),
-              ),
-              const SizedBox(width: 8),
-              FutureBuilder<bool>(
-                future: isFavoriteFuture,
-                builder: (context, snap) {
-                  final isFav = snap.data ?? false;
-                  return IconButton(
-                    visualDensity: VisualDensity.compact,
-                    tooltip:
-                        isFav ? 'Quitar de favoritos' : 'Agregar a favoritos',
-                    icon: Icon(isFav ? Icons.favorite : Icons.favorite_border,
-                        color: isFav ? Colors.redAccent : Colors.black38),
-                    onPressed: () async => onToggleFavorite(),
-                  );
-                },
-              ),
-            ],
+                // Favorito (colores originales: rojo)
+                FutureBuilder<bool>(
+                  future: isFavoriteFuture,
+                  builder: (context, snap) {
+                    final isFav = snap.data ?? false;
+                    return IconButton(
+                      visualDensity: VisualDensity.compact,
+                      tooltip:
+                          isFav ? 'Quitar de favoritos' : 'Agregar a favoritos',
+                      icon: Icon(isFav ? Icons.favorite : Icons.favorite_border,
+                          color: isFav ? Colors.redAccent : Colors.black38),
+                      onPressed: () async => onToggleFavorite(),
+                    );
+                  },
+                ),
+              ],
+            ),
           ),
         ),
       ),
     );
+  }
+
+  static String _fileNameWithoutExt(String n) {
+    final i = n.lastIndexOf('.');
+    return i > 0 ? n.substring(0, i) : n;
   }
 }

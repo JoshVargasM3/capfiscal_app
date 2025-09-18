@@ -6,9 +6,9 @@ class CapfiscalBottomNav extends StatelessWidget {
     super.key,
     required this.currentIndex,
     this.onTap, // si lo dejas null, se usa la navegación por defecto
-    this.background = const Color(0xFFEDEAEA), // gris claro del mockup
-    this.activeColor = const Color(0xFF6B1A1A), // borgoña
-    this.inactiveColor = const Color(0xFF6B1A1A),
+    this.background = const Color(0xFF0A0A0B), // negro profundo
+    this.activeColor = const Color(0xFFE1B85C), // dorado base
+    this.inactiveColor = const Color(0xFFBEBEC6), // gris claro
   });
 
   final int currentIndex;
@@ -28,14 +28,18 @@ class CapfiscalBottomNav extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    // tono dorado más oscuro para degradado
+    const goldDark = Color(0xFFB88F30);
+
     return SafeArea(
       top: false,
       child: Container(
         padding: const EdgeInsets.fromLTRB(14, 8, 14, 10),
-        decoration: BoxDecoration(
-          color: background,
-          border: const Border(
-            top: BorderSide(color: Color(0x22000000)),
+        decoration: const BoxDecoration(
+          // barra sólida oscura + línea superior sutil
+          color: Color(0xFF0A0A0B),
+          border: Border(
+            top: BorderSide(color: Color(0x33E1B85C)), // dorado translúcido
           ),
         ),
         child: Row(
@@ -49,6 +53,7 @@ class CapfiscalBottomNav extends StatelessWidget {
                   onTap != null ? onTap!(i) : _defaultNavigate(context, i),
               activeColor: activeColor,
               inactiveColor: inactiveColor,
+              activeColorDark: goldDark,
             ),
             _Item(
               icon: Icons.ondemand_video_rounded, // Videos
@@ -58,6 +63,7 @@ class CapfiscalBottomNav extends StatelessWidget {
                   onTap != null ? onTap!(i) : _defaultNavigate(context, i),
               activeColor: activeColor,
               inactiveColor: inactiveColor,
+              activeColorDark: goldDark,
             ),
             _Item(
               icon: Icons.home_rounded, // Home
@@ -67,6 +73,7 @@ class CapfiscalBottomNav extends StatelessWidget {
                   onTap != null ? onTap!(i) : _defaultNavigate(context, i),
               activeColor: activeColor,
               inactiveColor: inactiveColor,
+              activeColorDark: goldDark,
             ),
             _Item(
               icon: Icons.chat_bubble_rounded, // Chat
@@ -76,6 +83,7 @@ class CapfiscalBottomNav extends StatelessWidget {
                   onTap != null ? onTap!(i) : _defaultNavigate(context, i),
               activeColor: activeColor,
               inactiveColor: inactiveColor,
+              activeColorDark: goldDark,
             ),
           ],
         ),
@@ -92,6 +100,7 @@ class _Item extends StatelessWidget {
     required this.onPressed,
     required this.activeColor,
     required this.inactiveColor,
+    required this.activeColorDark,
   });
 
   final IconData icon;
@@ -100,25 +109,45 @@ class _Item extends StatelessWidget {
   final ValueChanged<int> onPressed;
   final Color activeColor;
   final Color inactiveColor;
+  final Color activeColorDark;
 
   @override
   Widget build(BuildContext context) {
     final bool active = index == currentIndex;
+
+    // píldora con degradado dorado y sombra suave cuando está activo
+    final BoxDecoration activeDeco = BoxDecoration(
+      gradient: LinearGradient(
+        colors: [activeColor, activeColorDark],
+        begin: Alignment.topLeft,
+        end: Alignment.bottomRight,
+      ),
+      borderRadius: BorderRadius.circular(18),
+      boxShadow: const [
+        BoxShadow(
+          color: Color(0x55E1B85C),
+          blurRadius: 12,
+          offset: Offset(0, 4),
+        ),
+      ],
+    );
+
+    final BoxDecoration inactiveDeco = BoxDecoration(
+      color: Colors.transparent,
+      borderRadius: BorderRadius.circular(18),
+    );
 
     return GestureDetector(
       onTap: () => onPressed(index),
       child: AnimatedContainer(
         duration: const Duration(milliseconds: 180),
         curve: Curves.easeOut,
-        padding: const EdgeInsets.all(8),
-        decoration: BoxDecoration(
-          color: active ? activeColor : Colors.transparent,
-          borderRadius: BorderRadius.circular(14), // píldora
-        ),
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+        decoration: active ? activeDeco : inactiveDeco,
         child: Icon(
           icon,
           size: 26,
-          color: active ? Colors.white : inactiveColor,
+          color: active ? Colors.black : inactiveColor, // contraste con dorado
         ),
       ),
     );

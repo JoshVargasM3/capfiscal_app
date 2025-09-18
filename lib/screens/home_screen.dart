@@ -14,9 +14,20 @@ class HomeScreen extends StatefulWidget {
   State<HomeScreen> createState() => _HomeScreenState();
 }
 
+class _CapColors {
+  static const Color bgTop = Color(0xFF0A0A0B);
+  static const Color bgMid = Color(0xFF2A2A2F);
+  static const Color bgBottom = Color(0xFF4A4A50);
+  static const Color surface = Color(0xFF1C1C21);
+  static const Color surfaceAlt = Color(0xFF2A2A2F);
+  static const Color text = Color(0xFFEFEFEF);
+  static const Color textMuted = Color(0xFFBEBEC6);
+  static const Color gold = Color(0xFFE1B85C);
+  static const Color goldDark = Color(0xFFB88F30);
+}
+
 class _HomeScreenState extends State<HomeScreen> {
   final _scaffoldKey = GlobalKey<ScaffoldState>();
-  static const _brand = Color(0xFF6B1A1A);
 
   // -------- BUSCADOR ----------
   final _searchCtrl = TextEditingController();
@@ -25,11 +36,11 @@ class _HomeScreenState extends State<HomeScreen> {
     final q = _searchCtrl.text.trim();
     if (q.isEmpty) return;
 
-    // Pequeña selección para “buscar en…”
     final where = await showModalBottomSheet<String>(
       context: context,
+      backgroundColor: _CapColors.surface,
       shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
+        borderRadius: BorderRadius.vertical(top: Radius.circular(18)),
       ),
       builder: (_) => SafeArea(
         child: Column(
@@ -37,15 +48,20 @@ class _HomeScreenState extends State<HomeScreen> {
           children: [
             const SizedBox(height: 8),
             const Text('Buscar en…',
-                style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+                style: TextStyle(
+                    fontWeight: FontWeight.bold,
+                    fontSize: 16,
+                    color: _CapColors.text)),
             ListTile(
-              leading: const Icon(Icons.menu_book),
-              title: const Text('Documentos'),
+              leading: const Icon(Icons.menu_book, color: _CapColors.gold),
+              title: const Text('Documentos',
+                  style: TextStyle(color: _CapColors.text)),
               onTap: () => Navigator.pop(context, 'docs'),
             ),
             ListTile(
-              leading: const Icon(Icons.play_circle),
-              title: const Text('Videos'),
+              leading: const Icon(Icons.play_circle, color: _CapColors.gold),
+              title: const Text('Videos',
+                  style: TextStyle(color: _CapColors.text)),
               onTap: () => Navigator.pop(context, 'videos'),
             ),
             const SizedBox(height: 12),
@@ -57,7 +73,6 @@ class _HomeScreenState extends State<HomeScreen> {
     if (!mounted || where == null) return;
 
     if (where == 'docs') {
-      // Si tu pantalla de biblioteca soporta argumentos, los enviamos
       Navigator.pushNamed(context, '/biblioteca', arguments: {'query': q});
     } else if (where == 'videos') {
       Navigator.pushNamed(context, '/video', arguments: {'query': q});
@@ -69,7 +84,6 @@ class _HomeScreenState extends State<HomeScreen> {
   int _page = 0;
   Timer? _autoTimer;
 
-  // Reemplaza estas rutas por tus flyers reales (assets o URLs)
   final List<Widget> _flyers = List.generate(
     4,
     (i) => Container(
@@ -77,7 +91,7 @@ class _HomeScreenState extends State<HomeScreen> {
         color: const Color(0xFFECE6E9),
         borderRadius: BorderRadius.circular(16),
       ),
-      child: Center(
+      child: const Center(
         child: Icon(Icons.image, size: 80, color: Colors.black26),
       ),
     ),
@@ -124,215 +138,260 @@ class _HomeScreenState extends State<HomeScreen> {
   @override
   Widget build(BuildContext context) {
     final titleStyle = Theme.of(context).textTheme.headlineSmall?.copyWith(
-          fontWeight: FontWeight.w800,
-          letterSpacing: .5,
-          color: _brand,
+          fontWeight: FontWeight.w900,
+          letterSpacing: .6,
+          color: _CapColors.gold,
         );
 
-    return Scaffold(
-      key: _scaffoldKey,
-      drawer: const CustomDrawer(),
-
-      appBar: CapfiscalTopBar(
-        onMenu: () => _scaffoldKey.currentState?.openDrawer(),
-        onRefresh: () {}, // hook si quieres recargar algo en Home
-        onProfile: () => Navigator.of(context).pushNamed('/perfil'),
+    return Container(
+      decoration: const BoxDecoration(
+        // Gris claro abajo → negro arriba (más notorio)
+        gradient: LinearGradient(
+          colors: [_CapColors.bgBottom, _CapColors.bgMid, _CapColors.bgTop],
+          stops: [0.0, 0.45, 1.0],
+          begin: Alignment.bottomCenter,
+          end: Alignment.topCenter,
+        ),
       ),
+      child: Scaffold(
+        key: _scaffoldKey,
+        backgroundColor: Colors.transparent,
+        drawer: const CustomDrawer(),
 
-      body: SafeArea(
-        top: false,
-        child: ListView(
-          padding: const EdgeInsets.only(bottom: 16),
-          children: [
-            // (sin "Regresar" en Home)
+        appBar: CapfiscalTopBar(
+          onMenu: () => _scaffoldKey.currentState?.openDrawer(),
+          onRefresh: () {}, // hook si quieres recargar algo en Home
+          onProfile: () => Navigator.of(context).pushNamed('/perfil'),
+        ),
 
-            // Buscador global
-            Padding(
-              padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
-              child: SizedBox(
-                height: 40,
-                child: TextField(
-                  controller: _searchCtrl,
-                  onSubmitted: (_) => _onSearch(),
-                  decoration: InputDecoration(
-                    hintText: 'Buscar en la app...',
-                    prefixIcon: const Icon(Icons.search),
-                    suffixIcon: IconButton(
-                      tooltip: 'Buscar',
-                      onPressed: _onSearch,
-                      icon: const Icon(Icons.manage_search),
+        body: SafeArea(
+          top: false,
+          child: ListView(
+            padding: const EdgeInsets.only(bottom: 16),
+            children: [
+              // Buscador global (oscuro + botón dorado)
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
+                child: Container(
+                  height: 44,
+                  decoration: BoxDecoration(
+                    borderRadius: BorderRadius.circular(28),
+                    gradient: const LinearGradient(
+                      colors: [_CapColors.surfaceAlt, Color(0xFF232329)],
+                      begin: Alignment.topLeft,
+                      end: Alignment.bottomRight,
                     ),
-                    filled: true,
-                    fillColor: Colors.white,
-                    contentPadding: const EdgeInsets.symmetric(horizontal: 12),
-                    border: OutlineInputBorder(
-                      borderRadius: BorderRadius.circular(24),
-                      borderSide: const BorderSide(color: Colors.black26),
-                    ),
-                    enabledBorder: OutlineInputBorder(
-                      borderRadius: BorderRadius.circular(24),
-                      borderSide: const BorderSide(color: Colors.black26),
-                    ),
-                    focusedBorder: const OutlineInputBorder(
-                      borderRadius: BorderRadius.all(Radius.circular(24)),
-                      borderSide: BorderSide(color: _brand, width: 1.2),
-                    ),
+                    border: Border.all(color: Colors.white12),
                   ),
-                ),
-              ),
-            ),
-
-            // PRÓXIMOS CURSOS
-            Padding(
-              padding: const EdgeInsets.fromLTRB(16, 8, 16, 10),
-              child: Text('PRÓXIMOS CURSOS', style: titleStyle),
-            ),
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 12),
-              child: ClipRRect(
-                borderRadius: BorderRadius.circular(16),
-                child: AspectRatio(
-                  aspectRatio: 16 / 9,
-                  child: Stack(
-                    alignment: Alignment.bottomCenter,
+                  padding: const EdgeInsets.symmetric(horizontal: 12),
+                  child: Row(
                     children: [
-                      PageView.builder(
-                        controller: _pageCtrl,
-                        itemCount: _flyers.length,
-                        onPageChanged: (i) => setState(() => _page = i),
-                        itemBuilder: (_, i) => _flyers[i],
-                      ),
-                      // Indicadores
-                      Positioned(
-                        bottom: 10,
-                        child: Row(
-                          children: List.generate(
-                            _flyers.length,
-                            (i) => AnimatedContainer(
-                              duration: const Duration(milliseconds: 250),
-                              margin: const EdgeInsets.symmetric(horizontal: 3),
-                              height: 8,
-                              width: _page == i ? 20 : 8,
-                              decoration: BoxDecoration(
-                                color: _page == i ? _brand : Colors.black26,
-                                borderRadius: BorderRadius.circular(10),
-                              ),
-                            ),
+                      const Icon(Icons.search, color: _CapColors.textMuted),
+                      const SizedBox(width: 6),
+                      Expanded(
+                        child: TextField(
+                          controller: _searchCtrl,
+                          onSubmitted: (_) => _onSearch(),
+                          cursorColor: _CapColors.gold,
+                          style: const TextStyle(color: _CapColors.text),
+                          decoration: const InputDecoration(
+                            isDense: true,
+                            border: InputBorder.none,
+                            hintText: 'Buscar en la app...',
+                            hintStyle: TextStyle(color: _CapColors.textMuted),
                           ),
+                        ),
+                      ),
+                      GestureDetector(
+                        onTap: _onSearch,
+                        child: Container(
+                          width: 36,
+                          height: 36,
+                          decoration: BoxDecoration(
+                            borderRadius: BorderRadius.circular(18),
+                            gradient: const LinearGradient(
+                              colors: [_CapColors.gold, _CapColors.goldDark],
+                              begin: Alignment.topLeft,
+                              end: Alignment.bottomRight,
+                            ),
+                            boxShadow: [
+                              BoxShadow(
+                                color: _CapColors.gold.withOpacity(.25),
+                                blurRadius: 10,
+                                offset: const Offset(0, 3),
+                              ),
+                            ],
+                          ),
+                          child: const Icon(Icons.search,
+                              size: 18, color: Colors.black),
                         ),
                       ),
                     ],
                   ),
                 ),
               ),
-            ),
 
-            // SECCIONES
-            Padding(
-              padding: const EdgeInsets.fromLTRB(16, 20, 16, 8),
-              child: Text('SECCIONES', style: titleStyle),
-            ),
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 16),
-              child: Row(
-                children: [
-                  _SectionButton(
-                    icon: Icons.menu_book,
-                    label: 'Biblioteca',
-                    onTap: () =>
-                        Navigator.pushReplacementNamed(context, '/biblioteca'),
-                  ),
-                  const SizedBox(width: 16),
-                  _SectionButton(
-                    icon: Icons.play_circle_fill,
-                    label: 'Videos',
-                    onTap: () =>
-                        Navigator.pushReplacementNamed(context, '/video'),
-                  ),
-                  const SizedBox(width: 16),
-                  _SectionButton(
-                    icon: Icons.forum,
-                    label: 'Chat',
-                    onTap: () =>
-                        Navigator.pushReplacementNamed(context, '/chat'),
-                  ),
-                ],
+              // PRÓXIMOS CURSOS
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 8, 16, 10),
+                child: Text('PRÓXIMOS CURSOS', style: titleStyle),
               ),
-            ),
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 12),
+                child: ClipRRect(
+                  borderRadius: BorderRadius.circular(16),
+                  child: AspectRatio(
+                    aspectRatio: 16 / 9,
+                    child: Stack(
+                      alignment: Alignment.bottomCenter,
+                      children: [
+                        PageView.builder(
+                          controller: _pageCtrl,
+                          itemCount: _flyers.length,
+                          onPageChanged: (i) => setState(() => _page = i),
+                          itemBuilder: (_, i) => _flyers[i],
+                        ),
+                        // Indicadores
+                        Positioned(
+                          bottom: 10,
+                          child: Row(
+                            children: List.generate(
+                              _flyers.length,
+                              (i) => AnimatedContainer(
+                                duration: const Duration(milliseconds: 250),
+                                margin:
+                                    const EdgeInsets.symmetric(horizontal: 3),
+                                height: 8,
+                                width: _page == i ? 20 : 8,
+                                decoration: BoxDecoration(
+                                  color: _page == i
+                                      ? _CapColors.gold
+                                      : Colors.white24,
+                                  borderRadius: BorderRadius.circular(10),
+                                ),
+                              ),
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
 
-            // REDES SOCIALES
-            Padding(
-              padding: const EdgeInsets.fromLTRB(16, 20, 16, 8),
-              child: Text('REDES SOCIALES', style: titleStyle),
-            ),
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 12),
-              child: Wrap(
-                spacing: 12,
-                runSpacing: 12,
-                children: [
-                  _SocialChip(
-                    color: const Color(0xFF000000),
-                    icon: Icons.music_note, // TikTok
-                    label: '@capfiscal.corporativo',
-                    onTap: () => _openUrl(
-                        'https://www.tiktok.com/@capfiscal.corporativo'),
-                  ),
-                  _SocialChip(
-                    color: Colors.red,
-                    icon: Icons.ondemand_video, // YouTube
-                    label: '@CapFiscalMéxico',
-                    onTap: () => _openUrl(
-                        'https://www.youtube.com/@CapFiscalM%C3%A9xico'),
-                  ),
-                  _SocialChip(
-                    color: Colors.green,
-                    icon: Icons.podcasts, // Spotify/Podcast
-                    label: 'Capfiscal Sin Filtro',
-                    onTap: () => _openUrl(
-                        'https://open.spotify.com/show/7maJrFMnD8uyUfZkt1d5Xh?si=94736585551e4549'),
-                  ),
-                  _SocialChip(
-                    color: Colors.purple,
-                    icon: Icons.camera_alt, // Instagram
-                    label: '@capfiscal.corporativo',
-                    onTap: () => _openUrl(
-                        'https://www.instagram.com/capfiscal.corporativo/?next=%2F'),
-                  ),
-                  _SocialChip(
-                    color: Colors.blue,
-                    icon: Icons.facebook, // Facebook
-                    label: 'Capfiscal Corporativo',
-                    onTap: () => _openUrl(
-                        'https://www.facebook.com/CapFiscalCorporativo/'),
-                  ),
-                ],
+              // CATEGORÍAS (secciones rápidas)
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 20, 16, 8),
+                child: Text('CATEGORÍAS', style: titleStyle),
               ),
-            ),
-            const SizedBox(height: 12),
-          ],
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 12),
+                child: Row(
+                  children: [
+                    _CategoryButton(
+                      icon: Icons.description_rounded,
+                      label: 'Documentos',
+                      onTap: () => Navigator.pushReplacementNamed(
+                          context, '/biblioteca'),
+                    ),
+                    const SizedBox(width: 12),
+                    _CategoryButton(
+                      icon: Icons.play_arrow_rounded,
+                      label: 'Videos',
+                      onTap: () =>
+                          Navigator.pushReplacementNamed(context, '/video'),
+                    ),
+                    const SizedBox(width: 12),
+                    _CategoryButton(
+                      icon: Icons.forum_rounded,
+                      label: 'Chat',
+                      onTap: () =>
+                          Navigator.pushReplacementNamed(context, '/chat'),
+                    ),
+                    const SizedBox(width: 12),
+                    _CategoryButton(
+                      icon: Icons.favorite_rounded,
+                      label: 'Favoritos',
+                      onTap: () =>
+                          Navigator.pushReplacementNamed(context, '/perfil'),
+                    ),
+                  ],
+                ),
+              ),
+
+              // REDES SOCIALES
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 20, 16, 8),
+                child: Text('REDES SOCIALES', style: titleStyle),
+              ),
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 12),
+                child: Wrap(
+                  spacing: 12,
+                  runSpacing: 12,
+                  children: [
+                    _SocialChip(
+                      color: const Color(0xFF000000),
+                      icon: Icons.music_note, // TikTok
+                      label: '@capfiscal.corporativo',
+                      onTap: () => _openUrl(
+                          'https://www.tiktok.com/@capfiscal.corporativo'),
+                    ),
+                    _SocialChip(
+                      color: Colors.red,
+                      icon: Icons.ondemand_video, // YouTube
+                      label: '@CapFiscalMéxico',
+                      onTap: () => _openUrl(
+                          'https://www.youtube.com/@CapFiscalM%C3%A9xico'),
+                    ),
+                    _SocialChip(
+                      color: Colors.green,
+                      icon: Icons.podcasts, // Spotify/Podcast
+                      label: 'Capfiscal Sin Filtro',
+                      onTap: () => _openUrl(
+                          'https://open.spotify.com/show/7maJrFMnD8uyUfZkt1d5Xh?si=94736585551e4549'),
+                    ),
+                    _SocialChip(
+                      color: Colors.purple,
+                      icon: Icons.camera_alt, // Instagram
+                      label: '@capfiscal.corporativo',
+                      onTap: () => _openUrl(
+                          'https://www.instagram.com/capfiscal.corporativo/?next=%2F'),
+                    ),
+                    _SocialChip(
+                      color: Colors.blue,
+                      icon: Icons.facebook, // Facebook
+                      label: 'Capfiscal Corporativo',
+                      onTap: () => _openUrl(
+                          'https://www.facebook.com/CapFiscalCorporativo/'),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 12),
+            ],
+          ),
         ),
-      ),
 
-      // Bottom nav (Home = índice 2)
-      bottomNavigationBar: CapfiscalBottomNav(
-        currentIndex: 2,
-        onTap: (i) {
-          switch (i) {
-            case 0:
-              Navigator.pushReplacementNamed(context, '/biblioteca');
-              break;
-            case 1:
-              Navigator.pushReplacementNamed(context, '/video');
-              break;
-            case 2:
-              // ya estás en Home
-              break;
-            case 3:
-              Navigator.pushReplacementNamed(context, '/chat');
-              break;
-          }
-        },
+        // Bottom nav (Home = índice 2)
+        bottomNavigationBar: CapfiscalBottomNav(
+          currentIndex: 2,
+          onTap: (i) {
+            switch (i) {
+              case 0:
+                Navigator.pushReplacementNamed(context, '/biblioteca');
+                break;
+              case 1:
+                Navigator.pushReplacementNamed(context, '/video');
+                break;
+              case 2:
+                break;
+              case 3:
+                Navigator.pushReplacementNamed(context, '/chat');
+                break;
+            }
+          },
+        ),
       ),
     );
   }
@@ -340,8 +399,8 @@ class _HomeScreenState extends State<HomeScreen> {
 
 // ---------- Widgets auxiliares ----------
 
-class _SectionButton extends StatelessWidget {
-  const _SectionButton({
+class _CategoryButton extends StatelessWidget {
+  const _CategoryButton({
     required this.icon,
     required this.label,
     required this.onTap,
@@ -351,27 +410,31 @@ class _SectionButton extends StatelessWidget {
   final String label;
   final VoidCallback onTap;
 
-  static const _brand = Color(0xFF6B1A1A);
-
   @override
   Widget build(BuildContext context) {
     return Expanded(
       child: Material(
-        color: _brand,
-        borderRadius: BorderRadius.circular(16),
+        color: _CapColors.surface,
+        borderRadius: BorderRadius.circular(14),
         child: InkWell(
-          borderRadius: BorderRadius.circular(16),
+          borderRadius: BorderRadius.circular(14),
           onTap: onTap,
+          splashColor: _CapColors.gold.withOpacity(.12),
           child: Padding(
-            padding: const EdgeInsets.symmetric(vertical: 18),
+            padding: const EdgeInsets.symmetric(vertical: 14),
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
-                Icon(icon, color: Colors.white, size: 36),
-                const SizedBox(height: 8),
-                Text(label,
-                    style: const TextStyle(
-                        color: Colors.white, fontWeight: FontWeight.w700)),
+                Icon(icon, color: Colors.white, size: 26),
+                const SizedBox(height: 6),
+                Text(
+                  label,
+                  style: const TextStyle(
+                    color: _CapColors.text,
+                    fontWeight: FontWeight.w700,
+                    fontSize: 12,
+                  ),
+                ),
               ],
             ),
           ),
@@ -402,14 +465,14 @@ class _SocialChip extends StatelessWidget {
       child: Container(
         padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
         decoration: BoxDecoration(
-          color: Colors.white,
-          border: Border.all(color: color.withOpacity(.5)),
+          color: _CapColors.surface,
+          border: Border.all(color: Colors.white12),
           borderRadius: BorderRadius.circular(28),
           boxShadow: [
             BoxShadow(
-              color: Colors.black.withOpacity(.03),
-              blurRadius: 4,
-              offset: const Offset(0, 2),
+              color: Colors.black.withOpacity(.15),
+              blurRadius: 8,
+              offset: const Offset(0, 4),
             ),
           ],
         ),
@@ -418,7 +481,14 @@ class _SocialChip extends StatelessWidget {
           children: [
             Icon(icon, color: color),
             const SizedBox(width: 8),
-            Text(label, style: const TextStyle(fontWeight: FontWeight.w600)),
+            const SizedBox(width: 2),
+            Text(
+              label,
+              style: const TextStyle(
+                fontWeight: FontWeight.w700,
+                color: _CapColors.text,
+              ),
+            ),
           ],
         ),
       ),

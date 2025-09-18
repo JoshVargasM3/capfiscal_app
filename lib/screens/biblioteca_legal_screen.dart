@@ -16,6 +16,20 @@ import '../widgets/custom_drawer.dart';
 import '../helpers/favorites_manager.dart';
 import '../helpers/view_mode.dart';
 
+/// === Paleta nueva CAPFISCAL (oscuro + dorado) ===
+class _CapColors {
+  static const Color bgTop = Color(0xFF0A0A0B); // negro más profundo arriba
+  static const Color bgMid = Color(0xFF2A2A2F); // gris oscuro intermedio
+  static const Color bgBottom =
+      Color(0xFF4A4A50); // gris más claro abajo (más notorio)
+  static const Color surface = Color(0xFF1C1C21);
+  static const Color white = Colors.white;
+  static const Color text = Color(0xFFEFEFEF);
+  static const Color textMuted = Color(0xFFBEBEC6);
+  static const Color gold = Color(0xFFE1B85C); // acento
+  static const Color goldDark = Color(0xFFB88F30);
+}
+
 class BibliotecaLegalScreen extends StatefulWidget {
   const BibliotecaLegalScreen({super.key});
 
@@ -115,8 +129,9 @@ class _BibliotecaLegalScreenState extends State<BibliotecaLegalScreen> {
   void _openFiltersSheet() {
     showModalBottomSheet(
       context: context,
+      backgroundColor: _CapColors.surface,
       shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
+        borderRadius: BorderRadius.vertical(top: Radius.circular(18)),
       ),
       builder: (_) => FiltersSheet(
         categories: _categories,
@@ -153,176 +168,277 @@ class _BibliotecaLegalScreenState extends State<BibliotecaLegalScreen> {
     if (mounted) setState(() {}); // refresca íconos
   }
 
-  @override
-  Widget build(BuildContext context) {
-    final filtered = _applyFilters();
+  // === Widgets de UI nueva ===
 
-    return Scaffold(
-      key: _scaffoldKey,
-      drawer: const CustomDrawer(),
-
-      // === TOP BAR estilo CAPFISCAL (con logo 1x/2x/3x) ===
-      appBar: CapfiscalTopBar(
-        onMenu: () => _scaffoldKey.currentState?.openDrawer(),
-        onRefresh: _fetchFiles,
-        onProfile: () => Navigator.of(context).pushNamed('/perfil'),
+  Widget _topBackBar() {
+    return Container(
+      padding: const EdgeInsets.fromLTRB(12, 12, 12, 8),
+      decoration: const BoxDecoration(
+        color: Colors.transparent,
       ),
-
-      body: Column(
+      child: Row(
         children: [
-          // Barra "Regresar"
-          Container(
-            color: Colors.white,
-            padding: const EdgeInsets.fromLTRB(12, 12, 12, 6),
-            child: Row(
-              children: [
-                const Icon(Icons.arrow_back, size: 18),
-                const SizedBox(width: 6),
-                TextButton(
-                  style: TextButton.styleFrom(
-                      padding: EdgeInsets.zero, minimumSize: const Size(0, 0)),
-                  onPressed: () => Navigator.of(context).maybePop(),
-                  child: const Text('Regresar',
-                      style: TextStyle(color: Colors.black87)),
-                ),
-              ],
+          InkWell(
+            onTap: () => Navigator.of(context).maybePop(),
+            borderRadius: BorderRadius.circular(20),
+            child: Container(
+              padding: const EdgeInsets.all(6),
+              decoration: BoxDecoration(
+                color: Colors.white.withOpacity(.08),
+                borderRadius: BorderRadius.circular(20),
+              ),
+              child: const Icon(Icons.arrow_back,
+                  size: 18, color: _CapColors.text),
             ),
           ),
+          const SizedBox(width: 8),
+          const Text(
+            'Regresar',
+            style: TextStyle(
+              color: _CapColors.text,
+              fontSize: 14,
+              fontWeight: FontWeight.w600,
+              letterSpacing: .2,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
 
-          // Título
-          Padding(
-            padding: const EdgeInsets.fromLTRB(16, 6, 16, 6),
-            child: Align(
-              alignment: Alignment.centerLeft,
-              child: Text(
-                'ARCHIVOS',
-                style: Theme.of(context).textTheme.headlineSmall?.copyWith(
-                      fontWeight: FontWeight.w800,
-                      letterSpacing: .5,
-                    ),
+  Widget _headline() {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 2, 16, 6),
+      child: Align(
+        alignment: Alignment.centerLeft,
+        child: Text(
+          'ARCHIVOS',
+          style: Theme.of(context).textTheme.headlineSmall?.copyWith(
+                color: _CapColors.text,
+                fontWeight: FontWeight.w900,
+                letterSpacing: .5,
+              ),
+        ),
+      ),
+    );
+  }
+
+  Widget _searchRow() {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(12, 4, 12, 10),
+      child: Row(
+        children: [
+          // Toggle vista
+          InkWell(
+            onTap: () => setState(() {
+              _viewMode =
+                  _viewMode == ViewMode.list ? ViewMode.grid : ViewMode.list;
+            }),
+            borderRadius: BorderRadius.circular(24),
+            child: Container(
+              width: 40,
+              height: 40,
+              alignment: Alignment.center,
+              decoration: BoxDecoration(
+                color: Colors.white.withOpacity(.08),
+                borderRadius: BorderRadius.circular(24),
+              ),
+              child: Icon(
+                _viewMode == ViewMode.list
+                    ? Icons.view_list
+                    : Icons.grid_view_rounded,
+                color: _CapColors.text,
               ),
             ),
           ),
-
-          // Buscador + Toggle vista + Filtros
-          Padding(
-            padding: const EdgeInsets.fromLTRB(12, 4, 12, 10),
-            child: Row(
-              children: [
-                IconButton(
-                  tooltip: _viewMode == ViewMode.list
-                      ? 'Vista lista'
-                      : 'Vista cuadricula',
-                  onPressed: () => setState(() {
-                    _viewMode = _viewMode == ViewMode.list
-                        ? ViewMode.grid
-                        : ViewMode.list;
-                  }),
-                  icon: Icon(_viewMode == ViewMode.list
-                      ? Icons.view_list
-                      : Icons.grid_view_rounded),
+          const SizedBox(width: 8),
+          // Search
+          Expanded(
+            child: Container(
+              height: 44,
+              decoration: BoxDecoration(
+                borderRadius: BorderRadius.circular(28),
+                gradient: const LinearGradient(
+                  colors: [Color(0xFF2A2A2F), Color(0xFF232329)],
+                  begin: Alignment.topLeft,
+                  end: Alignment.bottomRight,
                 ),
-                const SizedBox(width: 4),
-                Expanded(
-                  child: SizedBox(
-                    height: 40,
+                border: Border.all(
+                  color: Colors.white12,
+                ),
+              ),
+              padding: const EdgeInsets.symmetric(horizontal: 12),
+              child: Row(
+                children: [
+                  const Icon(Icons.search, color: _CapColors.textMuted),
+                  const SizedBox(width: 6),
+                  Expanded(
                     child: TextField(
                       onChanged: (q) => setState(() {
                         _search = q;
                         _activeCategory = '';
                       }),
-                      decoration: InputDecoration(
-                        contentPadding:
-                            const EdgeInsets.symmetric(horizontal: 12),
+                      cursorColor: _CapColors.gold,
+                      style: const TextStyle(color: _CapColors.text),
+                      decoration: const InputDecoration(
+                        isDense: true,
+                        border: InputBorder.none,
                         hintText: 'Buscar documentos...',
-                        prefixIcon: const Icon(Icons.search),
-                        filled: true,
-                        fillColor: Colors.white,
-                        border: OutlineInputBorder(
-                          borderRadius: BorderRadius.circular(24),
-                          borderSide: const BorderSide(color: Colors.black26),
-                        ),
-                        enabledBorder: OutlineInputBorder(
-                          borderRadius: BorderRadius.circular(24),
-                          borderSide: const BorderSide(color: Colors.black26),
-                        ),
-                        focusedBorder: const OutlineInputBorder(
-                          borderRadius: BorderRadius.all(Radius.circular(24)),
-                          borderSide:
-                              BorderSide(color: Color(0xFF6B1A1A), width: 1.2),
-                        ),
+                        hintStyle: TextStyle(color: _CapColors.textMuted),
                       ),
                     ),
                   ),
-                ),
-                const SizedBox(width: 8),
-                TextButton.icon(
-                  onPressed: _openFiltersSheet,
-                  icon: const Icon(Icons.filter_list),
-                  label: const Text('Filtros'),
-                  style: TextButton.styleFrom(foregroundColor: Colors.black87),
-                ),
-              ],
+                  // Botón dorado
+                  GestureDetector(
+                    onTap: () {}, // buscador es reactivo; mantenemos el look
+                    child: Container(
+                      width: 36,
+                      height: 36,
+                      decoration: BoxDecoration(
+                        borderRadius: BorderRadius.circular(18),
+                        gradient: const LinearGradient(
+                          colors: [_CapColors.gold, _CapColors.goldDark],
+                          begin: Alignment.topLeft,
+                          end: Alignment.bottomRight,
+                        ),
+                        boxShadow: [
+                          BoxShadow(
+                            color: _CapColors.gold.withOpacity(.25),
+                            blurRadius: 10,
+                            offset: const Offset(0, 3),
+                          ),
+                        ],
+                      ),
+                      child: const Icon(Icons.search,
+                          size: 18, color: Colors.black),
+                    ),
+                  ),
+                ],
+              ),
             ),
           ),
-
-          // Contenido
-          Expanded(
-            child: _loading
-                ? const Center(child: CircularProgressIndicator())
-                : filtered.isEmpty
-                    ? const Center(child: Text('No se encontraron documentos'))
-                    : (_viewMode == ViewMode.list
-                        ? ListView.separated(
-                            padding: const EdgeInsets.fromLTRB(12, 4, 12, 12),
-                            itemCount: filtered.length,
-                            separatorBuilder: (_, __) =>
-                                const SizedBox(height: 10),
-                            itemBuilder: (ctx, i) {
-                              final ref = filtered[i];
-                              return FileListTile(
-                                name: ref.name,
-                                onTap: () => _downloadAndOpenFile(ref),
-                                // ✅ favoritos por usuario
-                                isFavoriteFuture:
-                                    _isFavoriteForCurrentUser(ref.name),
-                                onToggleFavorite: () =>
-                                    _toggleFavoriteForCurrentUser(ref.name),
-                              );
-                            },
-                          )
-                        : GridView.builder(
-                            padding: const EdgeInsets.all(12),
-                            gridDelegate:
-                                const SliverGridDelegateWithFixedCrossAxisCount(
-                              crossAxisCount: 2,
-                              mainAxisSpacing: 12,
-                              crossAxisSpacing: 12,
-                              childAspectRatio: .78,
-                            ),
-                            itemCount: filtered.length,
-                            itemBuilder: (ctx, i) {
-                              final ref = filtered[i];
-                              return FileGridCard(
-                                name: ref.name,
-                                onTap: () => _downloadAndOpenFile(ref),
-                                // ✅ favoritos por usuario
-                                isFavoriteFuture:
-                                    _isFavoriteForCurrentUser(ref.name),
-                                onToggleFavorite: () =>
-                                    _toggleFavoriteForCurrentUser(ref.name),
-                              );
-                            },
-                          )),
+          const SizedBox(width: 8),
+          // Filtros (outline dorado)
+          OutlinedButton.icon(
+            onPressed: _openFiltersSheet,
+            icon:
+                const Icon(Icons.filter_list, size: 18, color: _CapColors.gold),
+            label: const Text('Filtros',
+                style: TextStyle(
+                    color: _CapColors.gold, fontWeight: FontWeight.w600)),
+            style: OutlinedButton.styleFrom(
+              side: const BorderSide(color: _CapColors.goldDark, width: 1),
+              foregroundColor: _CapColors.gold,
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 12),
+              shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(24)),
+            ),
           ),
         ],
       ),
+    );
+  }
 
-      // === BOTTOM NAV estilo mockup ===
-      // 👉 Deja SIN onTap para usar la navegación por defecto:
-      // ['/biblioteca', '/video', '/home', '/chat']
-      bottomNavigationBar: const CapfiscalBottomNav(
-        currentIndex: 0, // Biblioteca
+  @override
+  Widget build(BuildContext context) {
+    final filtered = _applyFilters();
+
+    return Container(
+      decoration: const BoxDecoration(
+        // 🔥 Degradado más notorio: gris claro (abajo) → negro (arriba)
+        gradient: LinearGradient(
+          colors: [_CapColors.bgBottom, _CapColors.bgMid, _CapColors.bgTop],
+          stops: [0.0, 0.4, 1.0],
+          begin: Alignment.bottomCenter,
+          end: Alignment.topCenter,
+        ),
+      ),
+      child: Scaffold(
+        key: _scaffoldKey,
+        backgroundColor: Colors.transparent,
+        drawer: const CustomDrawer(),
+
+        // === TOP BAR estilo CAPFISCAL (con logo 1x/2x/3x) ===
+        appBar: CapfiscalTopBar(
+          onMenu: () => _scaffoldKey.currentState?.openDrawer(),
+          onRefresh: _fetchFiles,
+          onProfile: () => Navigator.of(context).pushNamed('/perfil'),
+        ),
+
+        body: Column(
+          children: [
+            _topBackBar(),
+            _headline(),
+            _searchRow(),
+
+            // Contenido
+            Expanded(
+              child: _loading
+                  ? const Center(
+                      child: CircularProgressIndicator(
+                        valueColor:
+                            AlwaysStoppedAnimation<Color>(_CapColors.gold),
+                      ),
+                    )
+                  : filtered.isEmpty
+                      ? const Center(
+                          child: Text(
+                            'No se encontraron documentos',
+                            style: TextStyle(color: _CapColors.textMuted),
+                          ),
+                        )
+                      : (_viewMode == ViewMode.list
+                          ? ListView.separated(
+                              padding: const EdgeInsets.fromLTRB(12, 4, 12, 12),
+                              itemCount: filtered.length,
+                              separatorBuilder: (_, __) =>
+                                  const SizedBox(height: 10),
+                              itemBuilder: (ctx, i) {
+                                final ref = filtered[i];
+                                return FileListTile(
+                                  name: ref.name,
+                                  onTap: () => _downloadAndOpenFile(ref),
+                                  // ✅ favoritos por usuario
+                                  isFavoriteFuture:
+                                      _isFavoriteForCurrentUser(ref.name),
+                                  onToggleFavorite: () =>
+                                      _toggleFavoriteForCurrentUser(ref.name),
+                                );
+                              },
+                            )
+                          : GridView.builder(
+                              padding: const EdgeInsets.all(12),
+                              gridDelegate:
+                                  const SliverGridDelegateWithFixedCrossAxisCount(
+                                crossAxisCount: 2,
+                                mainAxisSpacing: 12,
+                                crossAxisSpacing: 12,
+                                childAspectRatio: .78,
+                              ),
+                              itemCount: filtered.length,
+                              itemBuilder: (ctx, i) {
+                                final ref = filtered[i];
+                                return FileGridCard(
+                                  name: ref.name,
+                                  onTap: () => _downloadAndOpenFile(ref),
+                                  // ✅ favoritos por usuario
+                                  isFavoriteFuture:
+                                      _isFavoriteForCurrentUser(ref.name),
+                                  onToggleFavorite: () =>
+                                      _toggleFavoriteForCurrentUser(ref.name),
+                                );
+                              },
+                            )),
+            ),
+          ],
+        ),
+
+        // === BOTTOM NAV estilo mockup ===
+        // 👉 Deja SIN onTap para usar la navegación por defecto:
+        // ['/biblioteca', '/video', '/home', '/chat']
+        bottomNavigationBar: const CapfiscalBottomNav(
+          currentIndex: 0, // Biblioteca
+        ),
       ),
     );
   }
