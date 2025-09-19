@@ -6,7 +6,6 @@ import 'package:open_filex/open_filex.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:firebase_auth/firebase_auth.dart'; // ✅ UID para favoritos por usuario
 
-import '../widgets/filters_sheet.dart';
 import '../widgets/file_list_tile.dart';
 import '../widgets/file_grid_card.dart';
 import '../widgets/app_top_bar.dart';
@@ -44,7 +43,10 @@ class _BibliotecaLegalScreenState extends State<BibliotecaLegalScreen> {
   bool _loading = true;
 
   String _search = '';
-  String _activeCategory = '';
+
+  /// 🔁 Antes: String _activeCategory
+  /// Ahora: múltiples categorías activas
+  final Set<String> _activeCategories = <String>{};
 
   /// 👉 Arranca en GRID para ver **2 columnas grandes**
   ViewMode _viewMode = ViewMode.grid;
@@ -74,7 +76,7 @@ class _BibliotecaLegalScreenState extends State<BibliotecaLegalScreen> {
         (args['query'] as String).isNotEmpty) {
       setState(() {
         _search = (args['query'] as String).trim();
-        _activeCategory = '';
+        _activeCategories.clear();
         _appliedRouteQuery = true;
       });
     } else {
@@ -116,32 +118,171 @@ class _BibliotecaLegalScreenState extends State<BibliotecaLegalScreen> {
   List<Reference> _applyFilters() {
     return _files.where((f) {
       final name = f.name.toLowerCase();
-      if (_search.isNotEmpty) return name.contains(_search.toLowerCase());
-      if (_activeCategory.isNotEmpty) {
-        return name.contains(_activeCategory.toLowerCase());
+
+      // búsqueda por texto (tiene prioridad)
+      if (_search.isNotEmpty) {
+        return name.contains(_search.toLowerCase());
       }
+
+      // si hay categorías activas: coincide con CUALQUIERA de ellas
+      if (_activeCategories.isNotEmpty) {
+        for (final cat in _activeCategories) {
+          if (name.contains(cat.toLowerCase())) return true;
+        }
+        return false;
+      }
+
+      // sin filtros
       return true;
     }).toList();
   }
 
   void _openFiltersSheet() {
+    // copia local editable, iniciada con las activas actuales
+    final Set<String> tempSel = Set<String>.from(_activeCategories);
+
     showModalBottomSheet(
       context: context,
       backgroundColor: _CapColors.surface,
+      isScrollControlled: false,
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(18)),
       ),
-      builder: (_) => FiltersSheet(
-        categories: _categories,
-        activeCategory: _activeCategory,
-        onApply: (sel) {
-          setState(() {
-            _activeCategory = sel ?? '';
-            _search = '';
-          });
-          Navigator.pop(context);
-        },
-      ),
+      builder: (_) {
+        // StatefulBuilder para refrescar el contenido del sheet
+        return StatefulBuilder(
+          builder: (context, setSheetState) {
+            return SafeArea(
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(16, 14, 16, 16),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Container(
+                      width: 48,
+                      height: 4,
+                      decoration: BoxDecoration(
+                        color: Colors.white24,
+                        borderRadius: BorderRadius.circular(2),
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                    const Align(
+                      alignment: Alignment.centerLeft,
+                      child: Text(
+                        'Filtros',
+                        style: TextStyle(
+                          color: _CapColors.text,
+                          fontWeight: FontWeight.w800,
+                          fontSize: 18,
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 10),
+
+                    // Chips multi-selección con aplicación en tiempo real
+                    Align(
+                      alignment: Alignment.centerLeft,
+                      child: Wrap(
+                        spacing: 10,
+                        runSpacing: 10,
+                        children: _categories.map((c) {
+                          final selected = tempSel.contains(c);
+                          return FilterChip(
+                            label: Text(
+                              c,
+                              style: TextStyle(
+                                color:
+                                    selected ? Colors.black : _CapColors.text,
+                                fontWeight: selected
+                                    ? FontWeight.w800
+                                    : FontWeight.w600,
+                              ),
+                            ),
+                            backgroundColor: const Color(0xFF2C2C31),
+                            selectedColor: _CapColors.gold,
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(12),
+                              side: BorderSide(
+                                color: selected
+                                    ? _CapColors.goldDark
+                                    : Colors.white24,
+                              ),
+                            ),
+                            selected: selected,
+                            onSelected: (val) {
+                              // actualiza selección local
+                              setSheetState(() {
+                                if (val) {
+                                  tempSel.add(c);
+                                } else {
+                                  tempSel.remove(c);
+                                }
+                              });
+                              // aplica inmediatamente a la pantalla de atrás
+                              setState(() {
+                                _activeCategories
+                                  ..clear()
+                                  ..addAll(tempSel);
+                                _search = '';
+                              });
+                            },
+                          );
+                        }).toList(),
+                      ),
+                    ),
+
+                    const SizedBox(height: 18),
+                    Row(
+                      children: [
+                        Expanded(
+                          child: OutlinedButton(
+                            onPressed: () {
+                              // limpia en ambos lados
+                              setSheetState(() => tempSel.clear());
+                              setState(() {
+                                _activeCategories.clear();
+                                _search = '';
+                              });
+                            },
+                            style: OutlinedButton.styleFrom(
+                              foregroundColor: _CapColors.text,
+                              side: const BorderSide(color: Colors.white24),
+                              padding: const EdgeInsets.symmetric(vertical: 14),
+                              shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(14),
+                              ),
+                            ),
+                            child: const Text('Limpiar'),
+                          ),
+                        ),
+                        const SizedBox(width: 12),
+                        Expanded(
+                          child: ElevatedButton(
+                            onPressed: () => Navigator.pop(context),
+                            style: ElevatedButton.styleFrom(
+                              padding: const EdgeInsets.symmetric(vertical: 14),
+                              shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(14),
+                              ),
+                              backgroundColor: _CapColors.gold,
+                              foregroundColor: Colors.black,
+                            ),
+                            child: const Text(
+                              'Cerrar',
+                              style: TextStyle(fontWeight: FontWeight.w800),
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+            );
+          },
+        );
+      },
     );
   }
 
@@ -267,7 +408,8 @@ class _BibliotecaLegalScreenState extends State<BibliotecaLegalScreen> {
                     child: TextField(
                       onChanged: (q) => setState(() {
                         _search = q;
-                        _activeCategory = '';
+                        _activeCategories
+                            .clear(); // al buscar, se limpian chips
                       }),
                       cursorColor: _CapColors.gold,
                       style: const TextStyle(color: _CapColors.text),
@@ -311,9 +453,13 @@ class _BibliotecaLegalScreenState extends State<BibliotecaLegalScreen> {
             onPressed: _openFiltersSheet,
             icon:
                 const Icon(Icons.filter_list, size: 18, color: _CapColors.gold),
-            label: const Text('Filtros',
-                style: TextStyle(
-                    color: _CapColors.gold, fontWeight: FontWeight.w600)),
+            label: Text(
+              _activeCategories.isEmpty
+                  ? 'Filtros'
+                  : 'Filtros (${_activeCategories.length})',
+              style: const TextStyle(
+                  color: _CapColors.gold, fontWeight: FontWeight.w600),
+            ),
             style: OutlinedButton.styleFrom(
               side: const BorderSide(color: _CapColors.goldDark, width: 1),
               foregroundColor: _CapColors.gold,
@@ -373,7 +519,7 @@ class _BibliotecaLegalScreenState extends State<BibliotecaLegalScreen> {
                         )
                       : (_viewMode == ViewMode.list
 
-                          /// --- LISTA (sin cambios) ---
+                          /// --- LISTA ---
                           ? ListView.separated(
                               padding: const EdgeInsets.fromLTRB(12, 4, 12, 12),
                               physics: const BouncingScrollPhysics(),
@@ -402,8 +548,7 @@ class _BibliotecaLegalScreenState extends State<BibliotecaLegalScreen> {
                                 crossAxisCount: 2, // 👈 SIEMPRE 2 columnas
                                 crossAxisSpacing: 14,
                                 mainAxisSpacing: 14,
-                                // Altura generosa para verlos grandes
-                                mainAxisExtent: 240, // 👈 tarjetas altas
+                                mainAxisExtent: 240, // tarjetas altas
                               ),
                               itemCount: filtered.length,
                               itemBuilder: (ctx, i) {

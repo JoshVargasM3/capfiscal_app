@@ -80,8 +80,8 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
-  // -------- CARRUSEL CURSOS (desde Firebase Storage) ----------
-  final _pageCtrl = PageController(viewportFraction: .92);
+  // -------- CARRUSEL CURSOS ----------
+  final _pageCtrl = PageController(viewportFraction: 1.0);
   int _page = 0;
   Timer? _autoTimer;
 
@@ -91,44 +91,64 @@ class _HomeScreenState extends State<HomeScreen> {
   List<String> _cursoUrls = [];
   String? _errorCursos;
 
+  // Aspect ratios por imagen (width / height).
+  List<double?> _cursoAspect = [];
+
   Future<void> _loadCursos() async {
     setState(() {
       _loadingCursos = true;
       _errorCursos = null;
       _cursoRefs = [];
       _cursoUrls = [];
+      _cursoAspect = [];
     });
     try {
-      // Lee la carpeta 'cursos' (nivel raíz o ajusta la ruta si está anidada)
       final list = await _storage.ref('cursos').listAll();
-      // Opcional: ordena por nombre para tener orden estable
       final items = [...list.items]..sort((a, b) => a.name.compareTo(b.name));
 
-      // Obtén URLs de descarga
       final urls = <String>[];
       for (final ref in items) {
         try {
           final url = await ref.getDownloadURL();
           urls.add(url);
-        } catch (_) {
-          // si algún archivo no es imagen o no tiene permiso, simplemente lo saltamos
-        }
+        } catch (_) {}
       }
       if (!mounted) return;
 
       setState(() {
         _cursoRefs = items;
         _cursoUrls = urls;
+        _cursoAspect = List<double?>.filled(urls.length, null);
         _loadingCursos = false;
       });
 
-      _startAutoSlide(); // reinicia el auto-slide con el nuevo length
+      _prefetchAspectRatios();
+      _startAutoSlide();
     } catch (e) {
       if (!mounted) return;
       setState(() {
         _errorCursos = 'No se pudieron cargar los cursos: $e';
         _loadingCursos = false;
       });
+    }
+  }
+
+  void _prefetchAspectRatios() {
+    for (int i = 0; i < _cursoUrls.length; i++) {
+      final imageProvider = Image.network(_cursoUrls[i]).image;
+      final listener = ImageStreamListener((ImageInfo info, bool _) {
+        final w = info.image.width.toDouble();
+        final h = info.image.height.toDouble();
+        if (w > 0 && h > 0) {
+          final ratio = w / h;
+          if (mounted) {
+            setState(() {
+              _cursoAspect[i] = ratio;
+            });
+          }
+        }
+      }, onError: (dynamic _, __) {});
+      imageProvider.resolve(const ImageConfiguration()).addListener(listener);
     }
   }
 
@@ -160,6 +180,25 @@ class _HomeScreenState extends State<HomeScreen> {
     super.dispose();
   }
 
+  // Altura dinámica del carrusel según imagen actual + orientación
+  double _carouselHeight(BuildContext context) {
+    final size = MediaQuery.of(context).size;
+    final w = size.width - 24; // padding horizontal 12+12
+    final h = size.height;
+    final isLandscape = size.width > size.height;
+
+    final ratio = (_cursoAspect.isNotEmpty && _page < _cursoAspect.length)
+        ? (_cursoAspect[_page] ?? (16 / 9))
+        : (16 / 9);
+
+    final rawH = w / ratio;
+    // Topes más generosos en landscape para aprovechar pantallas anchas
+    final maxH = h * (isLandscape ? 0.8 : 0.65);
+    final minH = isLandscape ? 180.0 : 200.0;
+
+    return rawH.clamp(minH, maxH);
+  }
+
   // -------- Visor Pantalla Completa ----------
   Future<void> _openFullScreen(int startIndex) async {
     if (_cursoUrls.isEmpty) return;
@@ -176,7 +215,6 @@ class _HomeScreenState extends State<HomeScreen> {
             backgroundColor: Colors.transparent,
             body: Stack(
               children: [
-                // PageView con zoom por imagen
                 PageView.builder(
                   controller: controller,
                   itemCount: _cursoUrls.length,
@@ -211,7 +249,6 @@ class _HomeScreenState extends State<HomeScreen> {
                     );
                   },
                 ),
-                // Botón de cierre
                 Positioned(
                   right: 12,
                   top: 12,
@@ -254,7 +291,6 @@ class _HomeScreenState extends State<HomeScreen> {
 
     return Container(
       decoration: const BoxDecoration(
-        // Gris claro abajo → negro arriba
         gradient: LinearGradient(
           colors: [_CapColors.bgBottom, _CapColors.bgMid, _CapColors.bgTop],
           stops: [0.0, 0.45, 1.0],
@@ -355,59 +391,70 @@ class _HomeScreenState extends State<HomeScreen> {
                   ],
                 ),
               ),
+
+              // Carrusel responsive (rellena contenedor)
               Padding(
                 padding: const EdgeInsets.symmetric(horizontal: 12),
                 child: ClipRRect(
                   borderRadius: BorderRadius.circular(16),
-                  child: AspectRatio(
-                    aspectRatio: 16 / 9,
-                    child: Container(
-                      color: _CapColors.surface,
-                      child: _loadingCursos
-                          ? const Center(
-                              child: CircularProgressIndicator(
-                                color: _CapColors.gold,
-                              ),
-                            )
-                          : (_errorCursos != null)
-                              ? Center(
-                                  child: Padding(
-                                    padding: const EdgeInsets.all(12.0),
+                  child: AnimatedContainer(
+                    duration: const Duration(milliseconds: 250),
+                    curve: Curves.easeInOut,
+                    height: _loadingCursos || _cursoUrls.isEmpty
+                        ? 200
+                        : _carouselHeight(context),
+                    color: _CapColors.surface,
+                    child: _loadingCursos
+                        ? const Center(
+                            child: CircularProgressIndicator(
+                              color: _CapColors.gold,
+                            ),
+                          )
+                        : (_errorCursos != null)
+                            ? Center(
+                                child: Padding(
+                                  padding: const EdgeInsets.all(12.0),
+                                  child: Text(
+                                    _errorCursos!,
+                                    textAlign: TextAlign.center,
+                                    style: const TextStyle(
+                                      color: _CapColors.textMuted,
+                                    ),
+                                  ),
+                                ),
+                              )
+                            : (_cursoUrls.isEmpty)
+                                ? const Center(
                                     child: Text(
-                                      _errorCursos!,
-                                      textAlign: TextAlign.center,
-                                      style: const TextStyle(
+                                      'Aún no hay cursos publicados.',
+                                      style: TextStyle(
                                         color: _CapColors.textMuted,
                                       ),
                                     ),
-                                  ),
-                                )
-                              : (_cursoUrls.isEmpty)
-                                  ? const Center(
-                                      child: Text(
-                                        'Aún no hay cursos publicados.',
-                                        style: TextStyle(
-                                          color: _CapColors.textMuted,
-                                        ),
-                                      ),
-                                    )
-                                  : Stack(
-                                      alignment: Alignment.bottomCenter,
-                                      children: [
-                                        PageView.builder(
-                                          controller: _pageCtrl,
-                                          itemCount: _cursoUrls.length,
-                                          onPageChanged: (i) =>
-                                              setState(() => _page = i),
-                                          itemBuilder: (_, i) {
-                                            final url = _cursoUrls[i];
-                                            return GestureDetector(
-                                              onTap: () => _openFullScreen(i),
-                                              child: Hero(
-                                                tag: 'curso_$i',
+                                  )
+                                : Stack(
+                                    alignment: Alignment.bottomCenter,
+                                    children: [
+                                      PageView.builder(
+                                        controller: _pageCtrl,
+                                        itemCount: _cursoUrls.length,
+                                        onPageChanged: (i) =>
+                                            setState(() => _page = i),
+                                        itemBuilder: (_, i) {
+                                          final url = _cursoUrls[i];
+                                          return GestureDetector(
+                                            onTap: () => _openFullScreen(i),
+                                            child: Hero(
+                                              tag: 'curso_$i',
+                                              child: Container(
+                                                color: _CapColors.surfaceAlt,
+                                                alignment: Alignment.center,
                                                 child: Image.network(
                                                   url,
+                                                  // 👉 rellena el contenedor manteniendo proporción
                                                   fit: BoxFit.cover,
+                                                  width: double.infinity,
+                                                  height: double.infinity,
                                                   loadingBuilder: (c, w, p) =>
                                                       p == null
                                                           ? w
@@ -430,37 +477,37 @@ class _HomeScreenState extends State<HomeScreen> {
                                                   ),
                                                 ),
                                               ),
-                                            );
-                                          },
-                                        ),
-                                        // Indicadores
-                                        Positioned(
-                                          bottom: 10,
-                                          child: Row(
-                                            children: List.generate(
-                                              _cursoUrls.length,
-                                              (i) => AnimatedContainer(
-                                                duration: const Duration(
-                                                    milliseconds: 250),
-                                                margin:
-                                                    const EdgeInsets.symmetric(
-                                                        horizontal: 3),
-                                                height: 8,
-                                                width: _page == i ? 20 : 8,
-                                                decoration: BoxDecoration(
-                                                  color: _page == i
-                                                      ? _CapColors.gold
-                                                      : Colors.white24,
-                                                  borderRadius:
-                                                      BorderRadius.circular(10),
-                                                ),
+                                            ),
+                                          );
+                                        },
+                                      ),
+                                      // Indicadores
+                                      Positioned(
+                                        bottom: 10,
+                                        child: Row(
+                                          children: List.generate(
+                                            _cursoUrls.length,
+                                            (i) => AnimatedContainer(
+                                              duration: const Duration(
+                                                  milliseconds: 250),
+                                              margin:
+                                                  const EdgeInsets.symmetric(
+                                                      horizontal: 3),
+                                              height: 8,
+                                              width: _page == i ? 20 : 8,
+                                              decoration: BoxDecoration(
+                                                color: _page == i
+                                                    ? _CapColors.gold
+                                                    : Colors.white24,
+                                                borderRadius:
+                                                    BorderRadius.circular(10),
                                               ),
                                             ),
                                           ),
                                         ),
-                                      ],
-                                    ),
-                    ),
+                                      ),
+                                    ],
+                                  ),
                   ),
                 ),
               ),
@@ -575,6 +622,9 @@ class _HomeScreenState extends State<HomeScreen> {
               case 3:
                 Navigator.pushReplacementNamed(context, '/chat');
                 break;
+              case 4:
+                Navigator.pushReplacementNamed(context, '/perfil');
+                break;
             }
           },
         ),
@@ -606,22 +656,30 @@ class _CategoryButton extends StatelessWidget {
           borderRadius: BorderRadius.circular(14),
           onTap: onTap,
           splashColor: _CapColors.gold.withOpacity(.12),
-          child: Padding(
-            padding: const EdgeInsets.symmetric(vertical: 14),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Icon(icon, color: Colors.white, size: 26),
-                const SizedBox(height: 6),
-                Text(
-                  label,
-                  style: const TextStyle(
-                    color: _CapColors.text,
-                    fontWeight: FontWeight.w700,
-                    fontSize: 12,
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(minHeight: 92),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(vertical: 14, horizontal: 8),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(icon, color: Colors.white, size: 26),
+                  const SizedBox(height: 6),
+                  Text(
+                    label,
+                    textAlign: TextAlign.center,
+                    softWrap: true,
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                      color: _CapColors.text,
+                      fontWeight: FontWeight.w700,
+                      fontSize: 13,
+                      height: 1.1,
+                    ),
                   ),
-                ),
-              ],
+                ],
+              ),
             ),
           ),
         ),

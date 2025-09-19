@@ -177,8 +177,9 @@ class _UserProfileScreenState extends State<UserProfileScreen> {
   bool _inFav(Set<String> favSet, String value, {String? typePrefix}) {
     if (value.isEmpty) return false;
     if (favSet.contains(value)) return true;
-    if (typePrefix != null && favSet.contains('$typePrefix:$value'))
+    if (typePrefix != null && favSet.contains('$typePrefix:$value')) {
       return true;
+    }
     return false;
   }
 
@@ -282,11 +283,13 @@ class _UserProfileScreenState extends State<UserProfileScreen> {
         ),
         actions: [
           TextButton(
-              onPressed: () => Navigator.pop(context, false),
-              child: const Text('Cancelar')),
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancelar'),
+          ),
           ElevatedButton(
-              onPressed: () => Navigator.pop(context, true),
-              child: const Text('Continuar')),
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Continuar'),
+          ),
         ],
       ),
     );
@@ -295,7 +298,9 @@ class _UserProfileScreenState extends State<UserProfileScreen> {
     try {
       final user = _auth.currentUser!;
       final cred = EmailAuthProvider.credential(
-          email: email, password: passCtrl.text.trim());
+        email: email,
+        password: passCtrl.text.trim(),
+      );
       await user.reauthenticateWithCredential(cred);
       return true;
     } catch (e) {
@@ -323,7 +328,8 @@ class _UserProfileScreenState extends State<UserProfileScreen> {
         } on FirebaseAuthException catch (e) {
           if (e.code == 'requires-recent-login') {
             final ok = await _reauthWithPassword(
-                currentEmail.isNotEmpty ? currentEmail : newEmail);
+              currentEmail.isNotEmpty ? currentEmail : newEmail,
+            );
             if (ok) {
               await user.updateEmail(newEmail);
               await _reloadAuthUser();
@@ -438,7 +444,6 @@ class _UserProfileScreenState extends State<UserProfileScreen> {
 
   // --------- Acciones de cuenta ---------
 
-  // ignore: unused_element
   Future<void> _sendPasswordReset() async {
     final email = _auth.currentUser?.email ?? _emailCtrl.text.trim();
     if (email.isEmpty) {
@@ -494,14 +499,36 @@ class _UserProfileScreenState extends State<UserProfileScreen> {
     final ok = await showDialog<bool>(
       context: context,
       builder: (_) => AlertDialog(
-        title: const Text('Cerrar sesión'),
-        content: const Text('¿Seguro que deseas cerrar tu sesión?'),
+        backgroundColor: _CapColors.surface,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+        title: const Text('Cerrar sesión',
+            style:
+                TextStyle(color: _CapColors.text, fontWeight: FontWeight.w800)),
+        content: const Text('¿Seguro que deseas cerrar tu sesión?',
+            style: TextStyle(color: _CapColors.textMuted)),
+        actionsPadding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
         actions: [
-          TextButton(
+          // Cancelar (outline tenue, estilo app)
+          OutlinedButton(
+            style: OutlinedButton.styleFrom(
+              side: const BorderSide(color: Colors.white24),
+              foregroundColor: _CapColors.text,
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+              shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(10)),
+            ),
             onPressed: () => Navigator.pop(context, false),
             child: const Text('Cancelar'),
           ),
+          // Cerrar sesión (dorado, estilo app)
           ElevatedButton.icon(
+            style: ElevatedButton.styleFrom(
+              backgroundColor: _CapColors.gold,
+              foregroundColor: Colors.black,
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+              shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(10)),
+            ),
             onPressed: () => Navigator.pop(context, true),
             icon: const Icon(Icons.logout),
             label: const Text('Cerrar sesión'),
@@ -981,8 +1008,8 @@ class _UserProfileScreenState extends State<UserProfileScreen> {
                 ),
               ),
 
-        // Bottom nav — usa navegación por defecto: ['/biblioteca','/video','/home','/chat']
-        bottomNavigationBar: const CapfiscalBottomNav(currentIndex: 3),
+        // ✅ Bottom nav — Perfil = índice 4 (iluminado)
+        bottomNavigationBar: const CapfiscalBottomNav(currentIndex: 4),
       ),
     );
   }

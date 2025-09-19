@@ -1,4 +1,3 @@
-// lib/widgets/app_top_bar.dart
 import 'package:flutter/material.dart';
 
 class CapfiscalTopBar extends StatelessWidget implements PreferredSizeWidget {
@@ -6,19 +5,26 @@ class CapfiscalTopBar extends StatelessWidget implements PreferredSizeWidget {
     super.key,
     required this.onMenu,
     required this.onRefresh,
-    required this.onProfile,
+    this.onProfile, // <- opcional, ya no se usa pero no rompe llamadas viejas
     this.logoAsset = 'assets/capfiscal_logo.png',
     this.showRefresh = true,
   });
 
   final VoidCallback onMenu;
   final VoidCallback onRefresh;
-  final VoidCallback onProfile;
+  final VoidCallback? onProfile; // <- quedó opcional para compatibilidad
   final String logoAsset;
   final bool showRefresh;
 
   @override
   Size get preferredSize => const Size.fromHeight(64);
+
+  void _goHome(BuildContext context) {
+    final current = ModalRoute.of(context)?.settings.name;
+    if (current != '/home') {
+      Navigator.pushReplacementNamed(context, '/home');
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -31,7 +37,9 @@ class CapfiscalTopBar extends StatelessWidget implements PreferredSizeWidget {
         ),
         border: Border(
           bottom: BorderSide(
-              color: Color(0x33E1B85C), width: 1), // línea dorada tenue
+            color: Color(0x33E1B85C), // línea dorada tenue
+            width: 1,
+          ),
         ),
       ),
       padding: const EdgeInsets.only(top: 8),
@@ -51,27 +59,33 @@ class CapfiscalTopBar extends StatelessWidget implements PreferredSizeWidget {
                   size: 26,
                 ),
               ),
-              // Logo centrado
+
+              // Logo centrado (tap -> Home)
               Expanded(
                 child: Center(
-                  child: SizedBox(
-                    height: 36,
-                    child: Image.asset(
-                      logoAsset,
-                      fit: BoxFit.contain,
-                      errorBuilder: (_, __, ___) => const Text(
-                        'CAPFISCAL',
-                        style: TextStyle(
-                          color: Color(0xFFE1B85C),
-                          fontWeight: FontWeight.w700,
-                          fontSize: 16,
-                          letterSpacing: 1.2,
+                  child: GestureDetector(
+                    behavior: HitTestBehavior.opaque,
+                    onTap: () => _goHome(context),
+                    child: SizedBox(
+                      height: 36,
+                      child: Image.asset(
+                        logoAsset,
+                        fit: BoxFit.contain,
+                        errorBuilder: (_, __, ___) => const Text(
+                          'CAPFISCAL',
+                          style: TextStyle(
+                            color: Color(0xFFE1B85C),
+                            fontWeight: FontWeight.w700,
+                            fontSize: 16,
+                            letterSpacing: 1.2,
+                          ),
                         ),
                       ),
                     ),
                   ),
                 ),
               ),
+
               // Botón refrescar opcional
               if (showRefresh)
                 IconButton(
@@ -84,17 +98,8 @@ class CapfiscalTopBar extends StatelessWidget implements PreferredSizeWidget {
                     size: 24,
                   ),
                 ),
-              // Botón perfil
-              IconButton(
-                tooltip: 'Perfil',
-                onPressed: onProfile,
-                splashRadius: 22,
-                icon: const Icon(
-                  Icons.person,
-                  color: Color(0xFFE1B85C),
-                  size: 26,
-                ),
-              ),
+
+              // ❌ Se elimina el botón de perfil (dejamos onProfile solo por compatibilidad)
             ],
           ),
         ),

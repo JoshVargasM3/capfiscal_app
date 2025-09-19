@@ -1,4 +1,3 @@
-// lib/widgets/app_bottom_nav.dart
 import 'package:flutter/material.dart';
 
 class CapfiscalBottomNav extends StatelessWidget {
@@ -18,7 +17,14 @@ class CapfiscalBottomNav extends StatelessWidget {
   final Color inactiveColor;
 
   void _defaultNavigate(BuildContext context, int i) {
-    final routes = const ['/biblioteca', '/video', '/home', '/chat'];
+    final routes = const [
+      '/biblioteca', // 0
+      '/video', // 1
+      '/home', // 2
+      '/chat', // 3
+      '/perfil' // 4 (nuevo perfil)
+    ];
+
     final target = routes[i];
     final current = ModalRoute.of(context)?.settings.name;
 
@@ -35,10 +41,9 @@ class CapfiscalBottomNav extends StatelessWidget {
       top: false,
       child: Container(
         padding: const EdgeInsets.fromLTRB(14, 8, 14, 10),
-        decoration: const BoxDecoration(
-          // barra sólida oscura + línea superior sutil
-          color: Color(0xFF0A0A0B),
-          border: Border(
+        decoration: BoxDecoration(
+          color: background,
+          border: const Border(
             top: BorderSide(color: Color(0x33E1B85C)), // dorado translúcido
           ),
         ),
@@ -78,6 +83,16 @@ class CapfiscalBottomNav extends StatelessWidget {
             _Item(
               icon: Icons.chat_bubble_rounded, // Chat
               index: 3,
+              currentIndex: currentIndex,
+              onPressed: (i) =>
+                  onTap != null ? onTap!(i) : _defaultNavigate(context, i),
+              activeColor: activeColor,
+              inactiveColor: inactiveColor,
+              activeColorDark: goldDark,
+            ),
+            _Item(
+              icon: Icons.person_rounded, // Perfil
+              index: 4,
               currentIndex: currentIndex,
               onPressed: (i) =>
                   onTap != null ? onTap!(i) : _defaultNavigate(context, i),
