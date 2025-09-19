@@ -1,6 +1,7 @@
 // lib/screens/home_screen.dart
 import 'dart:async';
 import 'package:flutter/material.dart';
+import 'package:firebase_storage/firebase_storage.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../widgets/custom_drawer.dart';
@@ -79,29 +80,64 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
-  // -------- CARRUSEL ----------
+  // -------- CARRUSEL CURSOS (desde Firebase Storage) ----------
   final _pageCtrl = PageController(viewportFraction: .92);
   int _page = 0;
   Timer? _autoTimer;
 
-  final List<Widget> _flyers = List.generate(
-    4,
-    (i) => Container(
-      decoration: BoxDecoration(
-        color: const Color(0xFFECE6E9),
-        borderRadius: BorderRadius.circular(16),
-      ),
-      child: const Center(
-        child: Icon(Icons.image, size: 80, color: Colors.black26),
-      ),
-    ),
-  );
+  final _storage = FirebaseStorage.instance;
+  bool _loadingCursos = true;
+  List<Reference> _cursoRefs = [];
+  List<String> _cursoUrls = [];
+  String? _errorCursos;
+
+  Future<void> _loadCursos() async {
+    setState(() {
+      _loadingCursos = true;
+      _errorCursos = null;
+      _cursoRefs = [];
+      _cursoUrls = [];
+    });
+    try {
+      // Lee la carpeta 'cursos' (nivel raíz o ajusta la ruta si está anidada)
+      final list = await _storage.ref('cursos').listAll();
+      // Opcional: ordena por nombre para tener orden estable
+      final items = [...list.items]..sort((a, b) => a.name.compareTo(b.name));
+
+      // Obtén URLs de descarga
+      final urls = <String>[];
+      for (final ref in items) {
+        try {
+          final url = await ref.getDownloadURL();
+          urls.add(url);
+        } catch (_) {
+          // si algún archivo no es imagen o no tiene permiso, simplemente lo saltamos
+        }
+      }
+      if (!mounted) return;
+
+      setState(() {
+        _cursoRefs = items;
+        _cursoUrls = urls;
+        _loadingCursos = false;
+      });
+
+      _startAutoSlide(); // reinicia el auto-slide con el nuevo length
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _errorCursos = 'No se pudieron cargar los cursos: $e';
+        _loadingCursos = false;
+      });
+    }
+  }
 
   void _startAutoSlide() {
     _autoTimer?.cancel();
+    if (_cursoUrls.isEmpty) return;
     _autoTimer = Timer.periodic(const Duration(seconds: 4), (_) {
-      if (!mounted || !_pageCtrl.hasClients) return;
-      final next = (_page + 1) % _flyers.length;
+      if (!mounted || !_pageCtrl.hasClients || _cursoUrls.isEmpty) return;
+      final next = (_page + 1) % _cursoUrls.length;
       _pageCtrl.animateToPage(
         next,
         duration: const Duration(milliseconds: 450),
@@ -113,7 +149,7 @@ class _HomeScreenState extends State<HomeScreen> {
   @override
   void initState() {
     super.initState();
-    _startAutoSlide();
+    _loadCursos();
   }
 
   @override
@@ -122,6 +158,79 @@ class _HomeScreenState extends State<HomeScreen> {
     _pageCtrl.dispose();
     _searchCtrl.dispose();
     super.dispose();
+  }
+
+  // -------- Visor Pantalla Completa ----------
+  Future<void> _openFullScreen(int startIndex) async {
+    if (_cursoUrls.isEmpty) return;
+    final controller = PageController(initialPage: startIndex);
+    await showGeneralDialog(
+      context: context,
+      barrierDismissible: true,
+      barrierLabel: 'Cerrar',
+      barrierColor: Colors.black.withOpacity(.9),
+      transitionDuration: const Duration(milliseconds: 200),
+      pageBuilder: (_, __, ___) {
+        return SafeArea(
+          child: Scaffold(
+            backgroundColor: Colors.transparent,
+            body: Stack(
+              children: [
+                // PageView con zoom por imagen
+                PageView.builder(
+                  controller: controller,
+                  itemCount: _cursoUrls.length,
+                  itemBuilder: (_, i) {
+                    final url = _cursoUrls[i];
+                    return Center(
+                      child: InteractiveViewer(
+                        minScale: 1,
+                        maxScale: 4,
+                        child: Hero(
+                          tag: 'curso_$i',
+                          child: Image.network(
+                            url,
+                            fit: BoxFit.contain,
+                            loadingBuilder: (c, w, p) => p == null
+                                ? w
+                                : const SizedBox(
+                                    height: 64,
+                                    width: 64,
+                                    child: CircularProgressIndicator(
+                                      color: _CapColors.gold,
+                                    ),
+                                  ),
+                            errorBuilder: (_, __, ___) => const Icon(
+                              Icons.broken_image_outlined,
+                              color: Colors.white54,
+                              size: 48,
+                            ),
+                          ),
+                        ),
+                      ),
+                    );
+                  },
+                ),
+                // Botón de cierre
+                Positioned(
+                  right: 12,
+                  top: 12,
+                  child: IconButton(
+                    tooltip: 'Cerrar',
+                    style: IconButton.styleFrom(
+                      backgroundColor: Colors.black54,
+                    ),
+                    icon:
+                        const Icon(Icons.close, color: Colors.white, size: 26),
+                    onPressed: () => Navigator.of(context).maybePop(),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
   }
 
   // -------- Redes sociales ----------
@@ -145,7 +254,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
     return Container(
       decoration: const BoxDecoration(
-        // Gris claro abajo → negro arriba (más notorio)
+        // Gris claro abajo → negro arriba
         gradient: LinearGradient(
           colors: [_CapColors.bgBottom, _CapColors.bgMid, _CapColors.bgTop],
           stops: [0.0, 0.45, 1.0],
@@ -160,7 +269,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
         appBar: CapfiscalTopBar(
           onMenu: () => _scaffoldKey.currentState?.openDrawer(),
-          onRefresh: () {}, // hook si quieres recargar algo en Home
+          onRefresh: _loadCursos,
           onProfile: () => Navigator.of(context).pushNamed('/perfil'),
         ),
 
@@ -169,7 +278,7 @@ class _HomeScreenState extends State<HomeScreen> {
           child: ListView(
             padding: const EdgeInsets.only(bottom: 16),
             children: [
-              // Buscador global (oscuro + botón dorado)
+              // Buscador global
               Padding(
                 padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
                 child: Container(
@@ -234,7 +343,17 @@ class _HomeScreenState extends State<HomeScreen> {
               // PRÓXIMOS CURSOS
               Padding(
                 padding: const EdgeInsets.fromLTRB(16, 8, 16, 10),
-                child: Text('PRÓXIMOS CURSOS', style: titleStyle),
+                child: Row(
+                  children: [
+                    Text('PRÓXIMOS CURSOS', style: titleStyle),
+                    const Spacer(),
+                    IconButton(
+                      tooltip: 'Recargar',
+                      onPressed: _loadCursos,
+                      icon: const Icon(Icons.refresh, color: _CapColors.text),
+                    ),
+                  ],
+                ),
               ),
               Padding(
                 padding: const EdgeInsets.symmetric(horizontal: 12),
@@ -242,44 +361,111 @@ class _HomeScreenState extends State<HomeScreen> {
                   borderRadius: BorderRadius.circular(16),
                   child: AspectRatio(
                     aspectRatio: 16 / 9,
-                    child: Stack(
-                      alignment: Alignment.bottomCenter,
-                      children: [
-                        PageView.builder(
-                          controller: _pageCtrl,
-                          itemCount: _flyers.length,
-                          onPageChanged: (i) => setState(() => _page = i),
-                          itemBuilder: (_, i) => _flyers[i],
-                        ),
-                        // Indicadores
-                        Positioned(
-                          bottom: 10,
-                          child: Row(
-                            children: List.generate(
-                              _flyers.length,
-                              (i) => AnimatedContainer(
-                                duration: const Duration(milliseconds: 250),
-                                margin:
-                                    const EdgeInsets.symmetric(horizontal: 3),
-                                height: 8,
-                                width: _page == i ? 20 : 8,
-                                decoration: BoxDecoration(
-                                  color: _page == i
-                                      ? _CapColors.gold
-                                      : Colors.white24,
-                                  borderRadius: BorderRadius.circular(10),
-                                ),
+                    child: Container(
+                      color: _CapColors.surface,
+                      child: _loadingCursos
+                          ? const Center(
+                              child: CircularProgressIndicator(
+                                color: _CapColors.gold,
                               ),
-                            ),
-                          ),
-                        ),
-                      ],
+                            )
+                          : (_errorCursos != null)
+                              ? Center(
+                                  child: Padding(
+                                    padding: const EdgeInsets.all(12.0),
+                                    child: Text(
+                                      _errorCursos!,
+                                      textAlign: TextAlign.center,
+                                      style: const TextStyle(
+                                        color: _CapColors.textMuted,
+                                      ),
+                                    ),
+                                  ),
+                                )
+                              : (_cursoUrls.isEmpty)
+                                  ? const Center(
+                                      child: Text(
+                                        'Aún no hay cursos publicados.',
+                                        style: TextStyle(
+                                          color: _CapColors.textMuted,
+                                        ),
+                                      ),
+                                    )
+                                  : Stack(
+                                      alignment: Alignment.bottomCenter,
+                                      children: [
+                                        PageView.builder(
+                                          controller: _pageCtrl,
+                                          itemCount: _cursoUrls.length,
+                                          onPageChanged: (i) =>
+                                              setState(() => _page = i),
+                                          itemBuilder: (_, i) {
+                                            final url = _cursoUrls[i];
+                                            return GestureDetector(
+                                              onTap: () => _openFullScreen(i),
+                                              child: Hero(
+                                                tag: 'curso_$i',
+                                                child: Image.network(
+                                                  url,
+                                                  fit: BoxFit.cover,
+                                                  loadingBuilder: (c, w, p) =>
+                                                      p == null
+                                                          ? w
+                                                          : const Center(
+                                                              child:
+                                                                  CircularProgressIndicator(
+                                                                color:
+                                                                    _CapColors
+                                                                        .gold,
+                                                              ),
+                                                            ),
+                                                  errorBuilder: (_, __, ___) =>
+                                                      const Center(
+                                                    child: Icon(
+                                                      Icons
+                                                          .image_not_supported_outlined,
+                                                      color: Colors.white38,
+                                                      size: 48,
+                                                    ),
+                                                  ),
+                                                ),
+                                              ),
+                                            );
+                                          },
+                                        ),
+                                        // Indicadores
+                                        Positioned(
+                                          bottom: 10,
+                                          child: Row(
+                                            children: List.generate(
+                                              _cursoUrls.length,
+                                              (i) => AnimatedContainer(
+                                                duration: const Duration(
+                                                    milliseconds: 250),
+                                                margin:
+                                                    const EdgeInsets.symmetric(
+                                                        horizontal: 3),
+                                                height: 8,
+                                                width: _page == i ? 20 : 8,
+                                                decoration: BoxDecoration(
+                                                  color: _page == i
+                                                      ? _CapColors.gold
+                                                      : Colors.white24,
+                                                  borderRadius:
+                                                      BorderRadius.circular(10),
+                                                ),
+                                              ),
+                                            ),
+                                          ),
+                                        ),
+                                      ],
+                                    ),
                     ),
                   ),
                 ),
               ),
 
-              // CATEGORÍAS (secciones rápidas)
+              // CATEGORÍAS
               Padding(
                 padding: const EdgeInsets.fromLTRB(16, 20, 16, 8),
                 child: Text('CATEGORÍAS', style: titleStyle),

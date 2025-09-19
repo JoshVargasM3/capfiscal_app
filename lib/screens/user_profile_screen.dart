@@ -438,6 +438,7 @@ class _UserProfileScreenState extends State<UserProfileScreen> {
 
   // --------- Acciones de cuenta ---------
 
+  // ignore: unused_element
   Future<void> _sendPasswordReset() async {
     final email = _auth.currentUser?.email ?? _emailCtrl.text.trim();
     if (email.isEmpty) {

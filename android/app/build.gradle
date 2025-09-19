@@ -18,12 +18,12 @@ def flutterVersionName = localProperties.getProperty('flutter.versionName') ?: '
 
 android {
     namespace "com.capfiscal.biblioteca"
-    compileSdk 35
+    compileSdk 36
 
     defaultConfig {
         applicationId "com.capfiscal.biblioteca"
         minSdkVersion flutter.minSdkVersion
-        targetSdkVersion 35
+        targetSdkVersion 36
         versionCode flutterVersionCode.toInteger()
         versionName flutterVersionName
     }

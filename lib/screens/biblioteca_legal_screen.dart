@@ -16,17 +16,15 @@ import '../widgets/custom_drawer.dart';
 import '../helpers/favorites_manager.dart';
 import '../helpers/view_mode.dart';
 
-/// === Paleta nueva CAPFISCAL (oscuro + dorado) ===
+/// === Paleta CAPFISCAL (oscuro + dorado) ===
 class _CapColors {
-  static const Color bgTop = Color(0xFF0A0A0B); // negro más profundo arriba
-  static const Color bgMid = Color(0xFF2A2A2F); // gris oscuro intermedio
-  static const Color bgBottom =
-      Color(0xFF4A4A50); // gris más claro abajo (más notorio)
+  static const Color bgTop = Color(0xFF0A0A0B);
+  static const Color bgMid = Color(0xFF2A2A2F);
+  static const Color bgBottom = Color(0xFF4A4A50);
   static const Color surface = Color(0xFF1C1C21);
-  static const Color white = Colors.white;
   static const Color text = Color(0xFFEFEFEF);
   static const Color textMuted = Color(0xFFBEBEC6);
-  static const Color gold = Color(0xFFE1B85C); // acento
+  static const Color gold = Color(0xFFE1B85C);
   static const Color goldDark = Color(0xFFB88F30);
 }
 
@@ -40,14 +38,16 @@ class BibliotecaLegalScreen extends StatefulWidget {
 class _BibliotecaLegalScreenState extends State<BibliotecaLegalScreen> {
   final GlobalKey<ScaffoldState> _scaffoldKey = GlobalKey<ScaffoldState>();
   final FirebaseStorage _storage = FirebaseStorage.instance;
-  final FirebaseAuth _auth = FirebaseAuth.instance; // ✅
+  final FirebaseAuth _auth = FirebaseAuth.instance;
 
   List<Reference> _files = [];
   bool _loading = true;
 
   String _search = '';
   String _activeCategory = '';
-  ViewMode _viewMode = ViewMode.list;
+
+  /// 👉 Arranca en GRID para ver **2 columnas grandes**
+  ViewMode _viewMode = ViewMode.grid;
 
   final List<String> _categories = const [
     'Demanda',
@@ -56,8 +56,7 @@ class _BibliotecaLegalScreenState extends State<BibliotecaLegalScreen> {
     'Requisición'
   ];
 
-  bool _appliedRouteQuery =
-      false; // para aplicar argumentos de búsqueda una sola vez
+  bool _appliedRouteQuery = false;
 
   @override
   void initState() {
@@ -65,7 +64,6 @@ class _BibliotecaLegalScreenState extends State<BibliotecaLegalScreen> {
     _fetchFiles();
   }
 
-  // Si vienes desde Home con arguments: {'query': '...'} lo aplicamos 1 sola vez
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
@@ -147,11 +145,10 @@ class _BibliotecaLegalScreenState extends State<BibliotecaLegalScreen> {
     );
   }
 
-  // === Helpers favoritos por usuario ===
-
+  // === Favoritos por usuario ===
   Future<bool> _isFavoriteForCurrentUser(String itemKey) async {
     final uid = _auth.currentUser?.uid;
-    if (uid == null) return false; // si no hay sesión, no hay favs
+    if (uid == null) return false;
     return FavoritesManager.isFavorite(uid, itemKey);
   }
 
@@ -165,17 +162,13 @@ class _BibliotecaLegalScreenState extends State<BibliotecaLegalScreen> {
       return;
     }
     await FavoritesManager.toggleFavorite(uid, itemKey);
-    if (mounted) setState(() {}); // refresca íconos
+    if (mounted) setState(() {});
   }
 
-  // === Widgets de UI nueva ===
-
+  // === UI ===
   Widget _topBackBar() {
     return Container(
       padding: const EdgeInsets.fromLTRB(12, 12, 12, 8),
-      decoration: const BoxDecoration(
-        color: Colors.transparent,
-      ),
       child: Row(
         children: [
           InkWell(
@@ -245,8 +238,8 @@ class _BibliotecaLegalScreenState extends State<BibliotecaLegalScreen> {
               ),
               child: Icon(
                 _viewMode == ViewMode.list
-                    ? Icons.view_list
-                    : Icons.grid_view_rounded,
+                    ? Icons.grid_view_rounded
+                    : Icons.view_list,
                 color: _CapColors.text,
               ),
             ),
@@ -263,9 +256,7 @@ class _BibliotecaLegalScreenState extends State<BibliotecaLegalScreen> {
                   begin: Alignment.topLeft,
                   end: Alignment.bottomRight,
                 ),
-                border: Border.all(
-                  color: Colors.white12,
-                ),
+                border: Border.all(color: Colors.white12),
               ),
               padding: const EdgeInsets.symmetric(horizontal: 12),
               child: Row(
@@ -288,37 +279,34 @@ class _BibliotecaLegalScreenState extends State<BibliotecaLegalScreen> {
                       ),
                     ),
                   ),
-                  // Botón dorado
-                  GestureDetector(
-                    onTap: () {}, // buscador es reactivo; mantenemos el look
-                    child: Container(
-                      width: 36,
-                      height: 36,
-                      decoration: BoxDecoration(
-                        borderRadius: BorderRadius.circular(18),
-                        gradient: const LinearGradient(
-                          colors: [_CapColors.gold, _CapColors.goldDark],
-                          begin: Alignment.topLeft,
-                          end: Alignment.bottomRight,
-                        ),
-                        boxShadow: [
-                          BoxShadow(
-                            color: _CapColors.gold.withOpacity(.25),
-                            blurRadius: 10,
-                            offset: const Offset(0, 3),
-                          ),
-                        ],
+                  // Botón dorado (look)
+                  Container(
+                    width: 36,
+                    height: 36,
+                    decoration: BoxDecoration(
+                      borderRadius: BorderRadius.circular(18),
+                      gradient: const LinearGradient(
+                        colors: [_CapColors.gold, _CapColors.goldDark],
+                        begin: Alignment.topLeft,
+                        end: Alignment.bottomRight,
                       ),
-                      child: const Icon(Icons.search,
-                          size: 18, color: Colors.black),
+                      boxShadow: [
+                        BoxShadow(
+                          color: _CapColors.gold.withOpacity(.25),
+                          blurRadius: 10,
+                          offset: const Offset(0, 3),
+                        ),
+                      ],
                     ),
+                    child:
+                        const Icon(Icons.search, size: 18, color: Colors.black),
                   ),
                 ],
               ),
             ),
           ),
           const SizedBox(width: 8),
-          // Filtros (outline dorado)
+          // Filtros
           OutlinedButton.icon(
             onPressed: _openFiltersSheet,
             icon:
@@ -345,7 +333,6 @@ class _BibliotecaLegalScreenState extends State<BibliotecaLegalScreen> {
 
     return Container(
       decoration: const BoxDecoration(
-        // 🔥 Degradado más notorio: gris claro (abajo) → negro (arriba)
         gradient: LinearGradient(
           colors: [_CapColors.bgBottom, _CapColors.bgMid, _CapColors.bgTop],
           stops: [0.0, 0.4, 1.0],
@@ -357,14 +344,11 @@ class _BibliotecaLegalScreenState extends State<BibliotecaLegalScreen> {
         key: _scaffoldKey,
         backgroundColor: Colors.transparent,
         drawer: const CustomDrawer(),
-
-        // === TOP BAR estilo CAPFISCAL (con logo 1x/2x/3x) ===
         appBar: CapfiscalTopBar(
           onMenu: () => _scaffoldKey.currentState?.openDrawer(),
           onRefresh: _fetchFiles,
           onProfile: () => Navigator.of(context).pushNamed('/perfil'),
         ),
-
         body: Column(
           children: [
             _topBackBar(),
@@ -388,8 +372,11 @@ class _BibliotecaLegalScreenState extends State<BibliotecaLegalScreen> {
                           ),
                         )
                       : (_viewMode == ViewMode.list
+
+                          /// --- LISTA (sin cambios) ---
                           ? ListView.separated(
                               padding: const EdgeInsets.fromLTRB(12, 4, 12, 12),
+                              physics: const BouncingScrollPhysics(),
                               itemCount: filtered.length,
                               separatorBuilder: (_, __) =>
                                   const SizedBox(height: 10),
@@ -398,7 +385,6 @@ class _BibliotecaLegalScreenState extends State<BibliotecaLegalScreen> {
                                 return FileListTile(
                                   name: ref.name,
                                   onTap: () => _downloadAndOpenFile(ref),
-                                  // ✅ favoritos por usuario
                                   isFavoriteFuture:
                                       _isFavoriteForCurrentUser(ref.name),
                                   onToggleFavorite: () =>
@@ -406,14 +392,18 @@ class _BibliotecaLegalScreenState extends State<BibliotecaLegalScreen> {
                                 );
                               },
                             )
+
+                          /// --- GRID 2 columnas GRANDES ---
                           : GridView.builder(
                               padding: const EdgeInsets.all(12),
+                              physics: const BouncingScrollPhysics(),
                               gridDelegate:
                                   const SliverGridDelegateWithFixedCrossAxisCount(
-                                crossAxisCount: 2,
-                                mainAxisSpacing: 12,
-                                crossAxisSpacing: 12,
-                                childAspectRatio: .78,
+                                crossAxisCount: 2, // 👈 SIEMPRE 2 columnas
+                                crossAxisSpacing: 14,
+                                mainAxisSpacing: 14,
+                                // Altura generosa para verlos grandes
+                                mainAxisExtent: 240, // 👈 tarjetas altas
                               ),
                               itemCount: filtered.length,
                               itemBuilder: (ctx, i) {
@@ -421,7 +411,6 @@ class _BibliotecaLegalScreenState extends State<BibliotecaLegalScreen> {
                                 return FileGridCard(
                                   name: ref.name,
                                   onTap: () => _downloadAndOpenFile(ref),
-                                  // ✅ favoritos por usuario
                                   isFavoriteFuture:
                                       _isFavoriteForCurrentUser(ref.name),
                                   onToggleFavorite: () =>
@@ -432,13 +421,7 @@ class _BibliotecaLegalScreenState extends State<BibliotecaLegalScreen> {
             ),
           ],
         ),
-
-        // === BOTTOM NAV estilo mockup ===
-        // 👉 Deja SIN onTap para usar la navegación por defecto:
-        // ['/biblioteca', '/video', '/home', '/chat']
-        bottomNavigationBar: const CapfiscalBottomNav(
-          currentIndex: 0, // Biblioteca
-        ),
+        bottomNavigationBar: const CapfiscalBottomNav(currentIndex: 0),
       ),
     );
   }
