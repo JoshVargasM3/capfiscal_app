@@ -23,7 +23,7 @@ dependencies:
   video_player: ^2.7.0
   youtube_player_iframe: ^5.1.2
   url_launcher: ^6.3.0
-  shared_preferences: ^2.2.2
+  shared_preferences: ^2.5.3
   image_picker: ^1.1.2     # <-- opcionalmente actualizado
 
 dev_dependencies:
