@@ -65,4 +65,5 @@ class DefaultFirebaseOptions {
     storageBucket: 'capfiscal-biblioteca-app.firebasestorage.app',
     iosBundleId: 'com.example.capfiscalApp',
   );
+
 }
