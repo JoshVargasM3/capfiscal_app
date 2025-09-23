@@ -58,11 +58,40 @@ class _LoginScreenState extends State<LoginScreen> {
         'subscription': {
           'startDate': null,
           'endDate': null,
+          'graceEndsAt': null,
+          'status': 'inactive',
           'paymentMethod': null,
         },
         'createdAt': FieldValue.serverTimestamp(),
         'updatedAt': FieldValue.serverTimestamp(),
       });
+      return;
+    }
+
+    final data = snap.data();
+    final sub = (data?['subscription'] as Map<String, dynamic>?) ?? {};
+    final updates = <String, Object?>{};
+
+    if (!sub.containsKey('startDate')) {
+      updates['subscription.startDate'] = null;
+    }
+    if (!sub.containsKey('endDate')) {
+      updates['subscription.endDate'] = null;
+    }
+    if (!sub.containsKey('graceEndsAt') && !sub.containsKey('graceEndDate')) {
+      updates['subscription.graceEndsAt'] = null;
+    }
+    if (!sub.containsKey('status')) {
+      updates['subscription.status'] = 'inactive';
+    }
+    if (!sub.containsKey('paymentMethod')) {
+      updates['subscription.paymentMethod'] = null;
+    }
+
+    if (updates.isNotEmpty) {
+      updates['subscription.updatedAt'] = FieldValue.serverTimestamp();
+      updates['updatedAt'] = FieldValue.serverTimestamp();
+      await ref.update(updates);
     }
   }
 
