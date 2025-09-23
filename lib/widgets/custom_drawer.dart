@@ -2,6 +2,9 @@
 import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 
+import '../services/subscription_service.dart';
+import 'subscription_scope.dart';
+
 class CustomDrawer extends StatelessWidget {
   const CustomDrawer({super.key});
 
@@ -29,6 +32,9 @@ class CustomDrawer extends StatelessWidget {
         .where((p) => p.isNotEmpty)
         .map((p) => p[0].toUpperCase() + p.substring(1))
         .join(' ');
+
+    final subscriptionScope = SubscriptionScope.maybeOf(context);
+    final subscriptionStatus = subscriptionScope?.status;
 
     void _go(String route) {
       Navigator.pop(context); // Cierra el drawer primero
@@ -240,7 +246,14 @@ class CustomDrawer extends StatelessWidget {
                                     fontSize: 11,
                                   ),
                                 ),
-                              ]
+                              ],
+                              if (subscriptionStatus != null) ...[
+                                const SizedBox(height: 10),
+                                _SubscriptionBadge(
+                                  status: subscriptionStatus,
+                                  onRefresh: subscriptionScope?.onRefresh,
+                                ),
+                              ],
                             ],
                           ),
                         ),
@@ -330,5 +343,207 @@ class CustomDrawer extends StatelessWidget {
         ),
       ),
     );
+  }
+}
+
+class _SubscriptionBadge extends StatefulWidget {
+  const _SubscriptionBadge({
+    required this.status,
+    required this.onRefresh,
+  });
+
+  final SubscriptionStatus status;
+  final Future<SubscriptionStatus> Function()? onRefresh;
+
+  @override
+  State<_SubscriptionBadge> createState() => _SubscriptionBadgeState();
+}
+
+class _SubscriptionBadgeState extends State<_SubscriptionBadge> {
+  bool _loading = false;
+
+  Future<void> _handleRefresh() async {
+    if (widget.onRefresh == null || _loading) return;
+    setState(() => _loading = true);
+    try {
+      final newStatus = await widget.onRefresh!.call();
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(_refreshMessage(newStatus))),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('No se pudo actualizar: $e')),
+      );
+    } finally {
+      if (mounted) setState(() => _loading = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final status = widget.status;
+    final color = _subscriptionColor(status.state);
+    final label = _subscriptionLabel(status);
+    final hint = _subscriptionHint(status);
+
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+      decoration: BoxDecoration(
+        color: CustomDrawer._surfaceAlt,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: color.withOpacity(.55)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(Icons.verified_user, color: color, size: 18),
+              const SizedBox(width: 6),
+              Expanded(
+                child: Text(
+                  label,
+                  style: TextStyle(
+                    color: color,
+                    fontWeight: FontWeight.w700,
+                    letterSpacing: .2,
+                  ),
+                ),
+              ),
+              if (widget.onRefresh != null)
+                IconButton(
+                  onPressed: _loading ? null : _handleRefresh,
+                  icon: _loading
+                      ? const SizedBox(
+                          width: 16,
+                          height: 16,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : const Icon(Icons.refresh, size: 18),
+                  color: color,
+                  tooltip: 'Actualizar estado',
+                ),
+            ],
+          ),
+          if (hint != null) ...[
+            const SizedBox(height: 4),
+            Text(
+              hint,
+              style: const TextStyle(
+                color: CustomDrawer._textMuted,
+                fontSize: 11,
+                height: 1.3,
+              ),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+}
+
+Color _subscriptionColor(SubscriptionState state) {
+  switch (state) {
+    case SubscriptionState.active:
+      return CustomDrawer._gold;
+    case SubscriptionState.grace:
+      return Colors.lightBlueAccent;
+    case SubscriptionState.pending:
+      return Colors.blueAccent;
+    case SubscriptionState.expired:
+      return Colors.orangeAccent;
+    case SubscriptionState.blocked:
+      return Colors.redAccent;
+    case SubscriptionState.none:
+      return Colors.white70;
+  }
+}
+
+String _subscriptionLabel(SubscriptionStatus status) {
+  switch (status.state) {
+    case SubscriptionState.active:
+      return 'Suscripción activa';
+    case SubscriptionState.grace:
+      return 'Periodo de gracia';
+    case SubscriptionState.pending:
+      return 'Pago pendiente';
+    case SubscriptionState.expired:
+      return 'Suscripción vencida';
+    case SubscriptionState.blocked:
+      return 'Acceso bloqueado';
+    case SubscriptionState.none:
+      return 'Sin suscripción';
+  }
+}
+
+String? _subscriptionHint(SubscriptionStatus status) {
+  final remaining = status.remaining;
+  switch (status.state) {
+    case SubscriptionState.active:
+      if (remaining != null && remaining > Duration.zero) {
+        return 'Vence en ${_formatRemaining(remaining)}.';
+      }
+      if (status.endDate != null) {
+        return 'Venció el ${_formatDate(status.endDate!)}.';
+      }
+      return 'Renueva antes de que expire para mantener el acceso.';
+    case SubscriptionState.grace:
+      if (remaining != null && remaining > Duration.zero) {
+        return 'Tu gracia termina en ${_formatRemaining(remaining)}.';
+      }
+      return 'Aprovecha para completar tu pago hoy mismo.';
+    case SubscriptionState.pending:
+      return 'Estamos revisando tu pago. Recibirás acceso en cuanto se apruebe.';
+    case SubscriptionState.expired:
+      if (status.endDate != null) {
+        return 'Terminó el ${_formatDate(status.endDate!)}. Renueva para editar tus formatos.';
+      }
+      return 'Renueva tu plan para seguir usando la biblioteca.';
+    case SubscriptionState.blocked:
+      return 'Contáctanos para revisar el estado de tu cuenta.';
+    case SubscriptionState.none:
+      return 'Suscríbete para desbloquear documentos exclusivos.';
+  }
+}
+
+String _formatRemaining(Duration duration) {
+  final days = duration.inDays;
+  if (days > 0) {
+    return '$days día${days == 1 ? '' : 's'}';
+  }
+  final hours = duration.inHours;
+  if (hours > 0) {
+    return '$hours h';
+  }
+  final minutes = duration.inMinutes;
+  if (minutes > 0) {
+    return '$minutes min';
+  }
+  return 'menos de un minuto';
+}
+
+String _formatDate(DateTime date) {
+  final local = date.toLocal();
+  return '${local.day.toString().padLeft(2, '0')}/'
+      '${local.month.toString().padLeft(2, '0')}/'
+      '${local.year}';
+}
+
+String _refreshMessage(SubscriptionStatus status) {
+  switch (status.state) {
+    case SubscriptionState.active:
+      return 'Tu suscripción está activa.';
+    case SubscriptionState.grace:
+      return 'Continúas en periodo de gracia.';
+    case SubscriptionState.pending:
+      return 'Seguimos validando tu pago.';
+    case SubscriptionState.expired:
+      return 'Aún aparece como vencida.';
+    case SubscriptionState.blocked:
+      return 'La cuenta sigue bloqueada.';
+    case SubscriptionState.none:
+      return 'No hay suscripción registrada.';
   }
 }
