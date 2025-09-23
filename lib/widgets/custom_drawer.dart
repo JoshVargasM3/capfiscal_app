@@ -49,7 +49,8 @@ class CustomDrawer extends StatelessWidget {
         await FirebaseAuth.instance.signOut();
         // Volvemos a la raíz ('/') y AuthGate decide -> login
         // ignore: use_build_context_synchronously
-        Navigator.pushNamedAndRemoveUntil(context, '/', (r) => false);
+        Navigator.of(context, rootNavigator: true)
+            .pushNamedAndRemoveUntil('/', (r) => false);
       } catch (e) {
         // ignore: use_build_context_synchronously
         ScaffoldMessenger.of(context).showSnackBar(

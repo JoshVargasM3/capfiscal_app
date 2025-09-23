@@ -484,7 +484,8 @@ class _UserProfileScreenState extends State<UserProfileScreen> {
     try {
       await _auth.signOut();
       if (!mounted) return;
-      Navigator.of(context).pushNamedAndRemoveUntil('/', (route) => false);
+      Navigator.of(context, rootNavigator: true)
+          .pushNamedAndRemoveUntil('/', (route) => false);
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
