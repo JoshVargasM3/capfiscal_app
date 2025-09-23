@@ -23,7 +23,7 @@ enum SubscriptionState {
 
 /// Parsed subscription information kept in the user document.
 class SubscriptionStatus {
-  const SubscriptionStatus({
+  SubscriptionStatus({
     this.startDate,
     this.endDate,
     this.graceEndsAt,
@@ -60,9 +60,8 @@ class SubscriptionStatus {
   final Map<String, dynamic> raw;
 
   /// Quick factory for empty state (no subscription data).
-  factory SubscriptionStatus.empty() => SubscriptionStatus(
-        checkedAt: DateTime.now().toUtc(),
-      );
+  factory SubscriptionStatus.empty() =>
+      SubscriptionStatus(checkedAt: DateTime.now().toUtc());
 
   /// Builds the status from a Firestore document snapshot.
   factory SubscriptionStatus.fromSnapshot(
@@ -233,7 +232,12 @@ class SubscriptionService {
       updates['subscription.graceEndsAt'] = null;
     }
     updates['subscription.paymentMethod'] = paymentMethod;
-    updates['subscription.status'] = status;
+    if (status != null) {
+      updates['subscription.status'] = status;
+      updates['status'] = status;
+    } else {
+      updates['subscription.status'] = null;
+    }
     updates['subscription.updatedAt'] = FieldValue.serverTimestamp();
     updates['updatedAt'] = FieldValue.serverTimestamp();
     await _userDoc(uid).set(updates, SetOptions(merge: true));

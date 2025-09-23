@@ -32,22 +32,40 @@ class _LoginScreenState extends State<LoginScreen> {
 
   final _email = TextEditingController();
   final _pass = TextEditingController();
+  final _paymentMethod = TextEditingController();
   final _formKey = GlobalKey<FormState>();
 
   bool _loading = false;
   bool _isLogin = true;
   bool _obscure = true;
+  bool _activateNow = false;
 
   @override
   void dispose() {
     _email.dispose();
     _pass.dispose();
+    _paymentMethod.dispose();
     super.dispose();
   }
 
-  Future<void> _ensureUserDoc(User user) async {
+  Future<void> _ensureUserDoc(
+    User user, {
+    String? paymentMethod,
+    bool activateImmediately = false,
+  }) async {
     final ref = _db.collection('users').doc(user.uid);
     final snap = await ref.get();
+    final trimmedMethod =
+        paymentMethod != null && paymentMethod.trim().isNotEmpty
+            ? paymentMethod.trim()
+            : null;
+    final now = DateTime.now().toUtc();
+    final startDate = activateImmediately ? Timestamp.fromDate(now) : null;
+    final endDate = activateImmediately
+        ? Timestamp.fromDate(now.add(const Duration(days: 30)))
+        : null;
+    final accountStatus = activateImmediately ? 'manual_active' : 'inactive';
+
     if (!snap.exists) {
       await ref.set({
         'name': user.displayName ?? '',
@@ -56,12 +74,14 @@ class _LoginScreenState extends State<LoginScreen> {
         'city': '',
         'photoUrl': user.photoURL,
         'subscription': {
-          'startDate': null,
-          'endDate': null,
+          'startDate': startDate,
+          'endDate': endDate,
           'graceEndsAt': null,
-          'status': 'inactive',
-          'paymentMethod': null,
+          'status': accountStatus,
+          'paymentMethod': trimmedMethod,
+          'updatedAt': FieldValue.serverTimestamp(),
         },
+        'status': accountStatus,
         'createdAt': FieldValue.serverTimestamp(),
         'updatedAt': FieldValue.serverTimestamp(),
       });
@@ -72,20 +92,40 @@ class _LoginScreenState extends State<LoginScreen> {
     final sub = (data?['subscription'] as Map<String, dynamic>?) ?? {};
     final updates = <String, Object?>{};
 
-    if (!sub.containsKey('startDate')) {
+    if (!sub.containsKey('startDate') &&
+        !updates.containsKey('subscription.startDate')) {
       updates['subscription.startDate'] = null;
     }
-    if (!sub.containsKey('endDate')) {
+    if (!sub.containsKey('endDate') &&
+        !updates.containsKey('subscription.endDate')) {
       updates['subscription.endDate'] = null;
     }
     if (!sub.containsKey('graceEndsAt') && !sub.containsKey('graceEndDate')) {
       updates['subscription.graceEndsAt'] = null;
     }
-    if (!sub.containsKey('status')) {
+    if (!sub.containsKey('status') &&
+        !updates.containsKey('subscription.status')) {
       updates['subscription.status'] = 'inactive';
     }
-    if (!sub.containsKey('paymentMethod')) {
+    if (!sub.containsKey('paymentMethod') &&
+        !updates.containsKey('subscription.paymentMethod')) {
       updates['subscription.paymentMethod'] = null;
+    }
+
+    if (trimmedMethod != null) {
+      updates['subscription.paymentMethod'] = trimmedMethod;
+    }
+
+    if (!(data?.containsKey('status') ?? false)) {
+      updates['status'] = 'inactive';
+    }
+
+    if (activateImmediately) {
+      updates['subscription.status'] = 'manual_active';
+      updates['subscription.startDate'] = startDate ?? Timestamp.fromDate(now);
+      updates['subscription.endDate'] = endDate ??
+          Timestamp.fromDate(now.add(const Duration(days: 30)));
+      updates['status'] = 'manual_active';
     }
 
     if (updates.isNotEmpty) {
@@ -102,19 +142,36 @@ class _LoginScreenState extends State<LoginScreen> {
     setState(() => _loading = true);
     try {
       UserCredential cred;
+      bool createdAccount = false;
       if (_isLogin) {
         cred = await _auth.signInWithEmailAndPassword(
           email: _email.text.trim(),
           password: _pass.text.trim(),
         );
       } else {
+        if (_activateNow && _paymentMethod.text.trim().isEmpty) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content:
+                  Text('Agrega un método de pago para activar la suscripción.'),
+            ),
+          );
+          return;
+        }
         cred = await _auth.createUserWithEmailAndPassword(
           email: _email.text.trim(),
           password: _pass.text.trim(),
         );
-        if (cred.user != null) await _ensureUserDoc(cred.user!);
+        createdAccount = true;
       }
-      if (cred.user != null) await _ensureUserDoc(cred.user!);
+      if (cred.user != null) {
+        final method = _paymentMethod.text.trim();
+        await _ensureUserDoc(
+          cred.user!,
+          paymentMethod: createdAccount && method.isNotEmpty ? method : null,
+          activateImmediately: createdAccount && _activateNow,
+        );
+      }
     } on FirebaseAuthException catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
@@ -372,6 +429,67 @@ class _LoginScreenState extends State<LoginScreen> {
                               },
                             ),
 
+                            if (!_isLogin) ...[
+                              const SizedBox(height: 12),
+                              TextFormField(
+                                controller: _paymentMethod,
+                                enabled: !_loading,
+                                style:
+                                    const TextStyle(color: _CapColors.text),
+                                decoration: _fieldDeco(
+                                  label: 'Método de pago (opcional)',
+                                  icon: Icons.credit_card,
+                                ),
+                              ),
+                              const SizedBox(height: 8),
+                              Theme(
+                                data: Theme.of(context).copyWith(
+                                  checkboxTheme: CheckboxThemeData(
+                                    shape: RoundedRectangleBorder(
+                                      borderRadius: BorderRadius.circular(6),
+                                    ),
+                                    fillColor:
+                                        MaterialStateProperty.resolveWith(
+                                      (states) {
+                                        if (states.contains(
+                                            MaterialState.selected)) {
+                                          return _CapColors.gold;
+                                        }
+                                        return Colors.white38;
+                                      },
+                                    ),
+                                  ),
+                                  unselectedWidgetColor: Colors.white54,
+                                ),
+                                child: CheckboxListTile(
+                                  value: _activateNow,
+                                  onChanged: _loading
+                                      ? null
+                                      : (value) {
+                                          setState(() {
+                                            _activateNow = value ?? false;
+                                          });
+                                        },
+                                  controlAffinity:
+                                      ListTileControlAffinity.leading,
+                                  title: const Text(
+                                    'Activar acceso inmediatamente',
+                                    style: TextStyle(
+                                      color: _CapColors.text,
+                                      fontWeight: FontWeight.w600,
+                                    ),
+                                  ),
+                                  subtitle: const Text(
+                                    'Usa un método manual para pruebas rápidas.',
+                                    style: TextStyle(
+                                      color: _CapColors.textMuted,
+                                      fontSize: 12,
+                                    ),
+                                  ),
+                                ),
+                              ),
+                            ],
+
                             if (_isLogin) ...[
                               const SizedBox(height: 8),
                               Align(
@@ -399,7 +517,11 @@ class _LoginScreenState extends State<LoginScreen> {
                             TextButton(
                               onPressed: _loading
                                   ? null
-                                  : () => setState(() => _isLogin = !_isLogin),
+                                  : () => setState(() {
+                                        _isLogin = !_isLogin;
+                                        _activateNow = false;
+                                        _paymentMethod.clear();
+                                      }),
                               child: Text(
                                 _isLogin
                                     ? '¿No tienes cuenta? Crear una'

@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../services/subscription_service.dart';
@@ -26,12 +27,21 @@ class _SubscriptionRequiredScreenState
     extends State<SubscriptionRequiredScreen> {
   bool _refreshing = false;
   bool _openingContact = false;
+  bool _activatingManually = false;
+  final _manualMethod = TextEditingController();
+  final SubscriptionService _subscriptionService = SubscriptionService();
 
   static const _bgTop = Color(0xFF0A0A0B);
   static const _bgMid = Color(0xFF2A2A2F);
   static const _bgBottom = Color(0xFF4A4A50);
   static const _surface = Color(0xFF1C1C21);
   static const _gold = Color(0xFFE1B85C);
+
+  @override
+  void dispose() {
+    _manualMethod.dispose();
+    super.dispose();
+  }
 
   Future<void> _handleRefresh() async {
     if (widget.onRefresh == null) return;
@@ -99,6 +109,54 @@ class _SubscriptionRequiredScreenState
   Future<void> _signOut() async {
     if (widget.onSignOut == null) return;
     await widget.onSignOut!.call();
+  }
+
+  Future<void> _activateManually() async {
+    if (_activatingManually) return;
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('No encontramos tu sesión activa.')),
+      );
+      return;
+    }
+
+    final method = _manualMethod.text.trim();
+    if (method.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Escribe un método o referencia de pago.'),
+        ),
+      );
+      return;
+    }
+
+    setState(() => _activatingManually = true);
+    try {
+      final now = DateTime.now().toUtc();
+      await _subscriptionService.updateSubscription(
+        user.uid,
+        startDate: now,
+        endDate: now.add(const Duration(days: 30)),
+        paymentMethod: method,
+        status: 'manual_active',
+      );
+      _manualMethod.clear();
+      if (widget.onRefresh != null) {
+        await widget.onRefresh!.call();
+      }
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Activamos tu acceso manualmente.')),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('No se pudo activar: $e')),
+      );
+    } finally {
+      if (mounted) setState(() => _activatingManually = false);
+    }
   }
 
   @override
@@ -240,6 +298,75 @@ class _SubscriptionRequiredScreenState
                             style: const TextStyle(
                               color: Color(0xFF8E8E96),
                               fontSize: 12,
+                            ),
+                          ),
+                          const SizedBox(height: 18),
+                          Text(
+                            'Activar manualmente',
+                            style:
+                                Theme.of(context).textTheme.titleSmall?.copyWith(
+                                      color: Colors.white,
+                                      fontWeight: FontWeight.w700,
+                                    ),
+                          ),
+                          const SizedBox(height: 8),
+                          TextField(
+                            controller: _manualMethod,
+                            enabled: !_activatingManually,
+                            style: const TextStyle(color: Colors.white),
+                            decoration: InputDecoration(
+                              labelText: 'Método o referencia de pago',
+                              labelStyle:
+                                  const TextStyle(color: Color(0xFF8E8E96)),
+                              prefixIcon: const Icon(
+                                Icons.credit_card,
+                                color: Color(0xFF8E8E96),
+                              ),
+                              filled: true,
+                              fillColor: const Color(0xFF2A2A30),
+                              border: OutlineInputBorder(
+                                borderRadius: BorderRadius.circular(14),
+                                borderSide: const BorderSide(color: Colors.white12),
+                              ),
+                              enabledBorder: OutlineInputBorder(
+                                borderRadius: BorderRadius.circular(14),
+                                borderSide: const BorderSide(color: Colors.white12),
+                              ),
+                              focusedBorder: OutlineInputBorder(
+                                borderRadius: BorderRadius.circular(14),
+                                borderSide: const BorderSide(color: _gold),
+                              ),
+                            ),
+                          ),
+                          const SizedBox(height: 12),
+                          SizedBox(
+                            width: double.infinity,
+                            height: 46,
+                            child: ElevatedButton(
+                              onPressed:
+                                  _activatingManually ? null : _activateManually,
+                              style: ElevatedButton.styleFrom(
+                                backgroundColor: _gold,
+                                foregroundColor: Colors.black,
+                                shape: RoundedRectangleBorder(
+                                  borderRadius: BorderRadius.circular(14),
+                                ),
+                              ),
+                              child: _activatingManually
+                                  ? const SizedBox(
+                                      width: 18,
+                                      height: 18,
+                                      child: CircularProgressIndicator(
+                                        strokeWidth: 2,
+                                        valueColor:
+                                            AlwaysStoppedAnimation<Color>(
+                                                Colors.black),
+                                      ),
+                                    )
+                                  : const Text(
+                                      'Activar acceso',
+                                      style: TextStyle(fontWeight: FontWeight.w700),
+                                    ),
                             ),
                           ),
                         ],
