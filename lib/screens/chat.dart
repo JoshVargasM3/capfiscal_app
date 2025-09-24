@@ -69,6 +69,13 @@ class _ChatScreenState extends State<ChatScreen> {
     Future.delayed(const Duration(milliseconds: 80), _animateToEnd);
   }
 
+  Future<void> _handleBack() async {
+    final navigator = Navigator.of(context);
+    final didPop = await navigator.maybePop();
+    if (!mounted || didPop || !navigator.mounted) return;
+    navigator.pushReplacementNamed('/home');
+  }
+
   @override
   void dispose() {
     _textCtrl.dispose();
@@ -106,12 +113,13 @@ class _ChatScreenState extends State<ChatScreen> {
             // Barra "Regresar" oscura
             Padding(
               padding: const EdgeInsets.fromLTRB(12, 12, 12, 6),
-              child: Row(
-                children: [
-                  InkWell(
-                    onTap: () => Navigator.of(context).maybePop(),
-                    borderRadius: BorderRadius.circular(20),
-                    child: Container(
+              child: InkWell(
+                onTap: _handleBack,
+                borderRadius: BorderRadius.circular(24),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Container(
                       padding: const EdgeInsets.all(6),
                       decoration: BoxDecoration(
                         color: Colors.white.withOpacity(.08),
@@ -120,17 +128,17 @@ class _ChatScreenState extends State<ChatScreen> {
                       child: const Icon(Icons.arrow_back,
                           size: 18, color: _CapColors.text),
                     ),
-                  ),
-                  const SizedBox(width: 8),
-                  const Text(
-                    'Regresar',
-                    style: TextStyle(
-                      color: _CapColors.text,
-                      fontSize: 14,
-                      fontWeight: FontWeight.w600,
+                    const SizedBox(width: 8),
+                    const Text(
+                      'Regresar',
+                      style: TextStyle(
+                        color: _CapColors.text,
+                        fontSize: 14,
+                        fontWeight: FontWeight.w600,
+                      ),
                     ),
-                  ),
-                ],
+                  ],
+                ),
               ),
             ),
 

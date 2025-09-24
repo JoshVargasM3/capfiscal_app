@@ -43,19 +43,22 @@ class CustomDrawer extends StatelessWidget {
     }
 
     Future<void> _signOut() async {
-      // Cierra el drawer
-      Navigator.pop(context);
+      final rootNavigator = Navigator.of(context, rootNavigator: true);
+      final messenger = ScaffoldMessenger.of(context);
+
+      // Cierra el drawer sin alterar el stack de pantallas
+      Scaffold.maybeOf(context)?.closeDrawer();
+
       try {
         await FirebaseAuth.instance.signOut();
-        // Volvemos a la raíz ('/') y AuthGate decide -> login
-        // ignore: use_build_context_synchronously
-        Navigator.of(context, rootNavigator: true)
-            .pushNamedAndRemoveUntil('/', (r) => false);
+        if (!rootNavigator.mounted) return;
+        rootNavigator.pushNamedAndRemoveUntil('/', (r) => false);
       } catch (e) {
-        // ignore: use_build_context_synchronously
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('No se pudo cerrar sesión: $e')),
-        );
+        if (messenger.mounted) {
+          messenger.showSnackBar(
+            SnackBar(content: Text('No se pudo cerrar sesión: $e')),
+          );
+        }
       }
     }
 
