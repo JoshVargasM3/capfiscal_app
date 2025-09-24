@@ -484,7 +484,8 @@ class _UserProfileScreenState extends State<UserProfileScreen> {
     try {
       await _auth.signOut();
       if (!mounted) return;
-      Navigator.of(context).pushNamedAndRemoveUntil('/', (route) => false);
+      Navigator.of(context, rootNavigator: true)
+          .pushNamedAndRemoveUntil('/', (route) => false);
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
@@ -542,6 +543,13 @@ class _UserProfileScreenState extends State<UserProfileScreen> {
   }
 
   // ------------------- UI -------------------
+
+  Future<void> _handleBack() async {
+    final navigator = Navigator.of(context);
+    final didPop = await navigator.maybePop();
+    if (!mounted || didPop || !navigator.mounted) return;
+    navigator.pushReplacementNamed('/home');
+  }
 
   void _showAvatarMenu(Offset position) async {
     final result = await showMenu<String>(
@@ -626,23 +634,28 @@ class _UserProfileScreenState extends State<UserProfileScreen> {
                       child: Row(
                         children: [
                           InkWell(
-                            onTap: () => Navigator.of(context).maybePop(),
-                            borderRadius: BorderRadius.circular(20),
-                            child: Container(
-                              padding: const EdgeInsets.all(6),
-                              decoration: BoxDecoration(
-                                color: Colors.white.withOpacity(.08),
-                                borderRadius: BorderRadius.circular(20),
-                              ),
-                              child: const Icon(Icons.arrow_back,
-                                  size: 18, color: _CapColors.text),
+                            onTap: _handleBack,
+                            borderRadius: BorderRadius.circular(24),
+                            child: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Container(
+                                  padding: const EdgeInsets.all(6),
+                                  decoration: BoxDecoration(
+                                    color: Colors.white.withOpacity(.08),
+                                    borderRadius: BorderRadius.circular(20),
+                                  ),
+                                  child: const Icon(Icons.arrow_back,
+                                      size: 18, color: _CapColors.text),
+                                ),
+                                const SizedBox(width: 8),
+                                const Text('Regresar',
+                                    style: TextStyle(
+                                        color: _CapColors.text,
+                                        fontWeight: FontWeight.w600)),
+                              ],
                             ),
                           ),
-                          const SizedBox(width: 8),
-                          const Text('Regresar',
-                              style: TextStyle(
-                                  color: _CapColors.text,
-                                  fontWeight: FontWeight.w600)),
                           const Spacer(),
                           OutlinedButton.icon(
                             style: OutlinedButton.styleFrom(

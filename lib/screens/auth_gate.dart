@@ -6,6 +6,10 @@ import '../widgets/subscription_scope.dart';
 import 'home_screen.dart';
 import 'login_screen.dart';
 import 'subscription_required_screen.dart';
+import 'biblioteca_legal_screen.dart';
+import 'video_screen.dart';
+import 'chat.dart';
+import 'user_profile_screen.dart';
 
 class AuthGate extends StatelessWidget {
   const AuthGate({super.key});
@@ -96,7 +100,7 @@ class _SubscriptionGateState extends State<_SubscriptionGate> {
           return SubscriptionScope(
             status: status,
             onRefresh: _refresh,
-            child: const HomeScreen(),
+            child: const _PrivateAreaNavigator(),
           );
         }
 
@@ -106,6 +110,63 @@ class _SubscriptionGateState extends State<_SubscriptionGate> {
           onSignOut: _signOut,
         );
       },
+    );
+  }
+}
+
+class _PrivateAreaNavigator extends StatefulWidget {
+  const _PrivateAreaNavigator();
+
+  @override
+  State<_PrivateAreaNavigator> createState() => _PrivateAreaNavigatorState();
+}
+
+class _PrivateAreaNavigatorState extends State<_PrivateAreaNavigator> {
+  final GlobalKey<NavigatorState> _navigatorKey = GlobalKey<NavigatorState>();
+
+  Future<bool> _handleWillPop() async {
+    final navigator = _navigatorKey.currentState;
+    if (navigator == null) return true;
+    final didPop = await navigator.maybePop();
+    return !didPop;
+  }
+
+  Route<dynamic> _onGenerateRoute(RouteSettings settings) {
+    Widget page;
+    switch (settings.name) {
+      case '/biblioteca':
+        page = const BibliotecaLegalScreen();
+        break;
+      case '/video':
+        page = const VideoScreen();
+        break;
+      case '/chat':
+        page = const ChatScreen();
+        break;
+      case '/perfil':
+        page = const UserProfileScreen();
+        break;
+      case '/home':
+      default:
+        page = const HomeScreen();
+        break;
+    }
+
+    return MaterialPageRoute<void>(
+      builder: (_) => page,
+      settings: settings,
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return WillPopScope(
+      onWillPop: _handleWillPop,
+      child: Navigator(
+        key: _navigatorKey,
+        initialRoute: '/home',
+        onGenerateRoute: _onGenerateRoute,
+      ),
     );
   }
 }
