@@ -205,7 +205,7 @@ packages:
     dependency: transitive
     description:
       name: firebase_app_check_platform_interface
-      sha256: 8dbb826d99c67512212331331461ee142e46645740f1c1209706ca2f72958e57
+      sha256: "8dbb826d99c67512212331331461ee142e46645740f1c1209706ca2f72958e57"
       url: "https://pub.dev"
     source: hosted
     version: "0.1.0+38"
@@ -250,7 +250,7 @@ packages:
     source: hosted
     version: "3.15.1"
   firebase_core_platform_interface:
-    dependency: transitive
+    dependency: "direct overridden"
     description:
       name: firebase_core_platform_interface
       sha256: "5dbc900677dcbe5873d22ad7fbd64b047750124f1f9b7ebe2a33b9ddccc838eb"
