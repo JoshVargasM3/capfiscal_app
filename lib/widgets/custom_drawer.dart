@@ -5,7 +5,7 @@ import 'package:firebase_auth/firebase_auth.dart';
 import '../services/subscription_service.dart';
 import 'subscription_scope.dart';
 
-class CustomDrawer extends StatelessWidget {
+class CustomDrawer extends StatefulWidget {
   const CustomDrawer({super.key});
 
   // 🎨 Paleta CAPFISCAL
@@ -16,6 +16,11 @@ class CustomDrawer extends StatelessWidget {
   static const _surface = Color(0xFF1C1C21);
   static const _surfaceAlt = Color(0xFF2A2A2F);
 
+  @override
+  State<CustomDrawer> createState() => _CustomDrawerState();
+}
+
+class _CustomDrawerState extends State<CustomDrawer> {
   @override
   Widget build(BuildContext context) {
     final current = ModalRoute.of(context)?.settings.name;
@@ -37,42 +42,51 @@ class CustomDrawer extends StatelessWidget {
     final subscriptionStatus = subscriptionScope?.status;
 
     void _go(String route) {
-      Navigator.pop(context); // Cierra el drawer primero
-      if (current == route) return;
-      Navigator.pushReplacementNamed(context, route);
+      final navigator = Navigator.of(context);
+      final currentRoute = current;
+      navigator.pop(); // Cierra el drawer primero
+      if (currentRoute == route) return;
+      navigator.pushReplacementNamed(route);
     }
 
     Future<void> _signOut() async {
-      // Cierra el drawer
-      Navigator.pop(context);
+      final rootNavigator = Navigator.of(context, rootNavigator: true);
+      final messenger = ScaffoldMessenger.maybeOf(context);
+
+      // Cierra el drawer sin alterar el stack de pantallas
+      Scaffold.maybeOf(context)?.closeDrawer();
+
       try {
         await FirebaseAuth.instance.signOut();
-        // Volvemos a la raíz ('/') y AuthGate decide -> login
-        // ignore: use_build_context_synchronously
-        Navigator.of(context, rootNavigator: true)
-            .pushNamedAndRemoveUntil('/', (r) => false);
+        if (!rootNavigator.mounted) return;
+        rootNavigator.pushNamedAndRemoveUntil('/', (r) => false);
       } catch (e) {
-        // ignore: use_build_context_synchronously
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('No se pudo cerrar sesión: $e')),
-        );
+        if (messenger != null && messenger.mounted) {
+          messenger.showSnackBar(
+            SnackBar(content: Text('No se pudo cerrar sesión: $e')),
+          );
+        }
       }
     }
 
     Future<void> _confirmSignOut() async {
       final ok = await showDialog<bool>(
         context: context,
-        builder: (_) => AlertDialog(
-          backgroundColor: _surface,
-          shape:
-              RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+        builder: (dialogContext) => AlertDialog(
+          backgroundColor: CustomDrawer._surface,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(12),
+          ),
           title: const Text(
             'Cerrar sesión',
-            style: TextStyle(color: _text, fontWeight: FontWeight.w800),
+            style: TextStyle(
+              color: CustomDrawer._text,
+              fontWeight: FontWeight.w800,
+            ),
           ),
           content: const Text(
             '¿Seguro que deseas cerrar tu sesión?',
-            style: TextStyle(color: _textMuted),
+            style: TextStyle(color: CustomDrawer._textMuted),
           ),
           actionsPadding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
           actions: [
@@ -80,20 +94,20 @@ class CustomDrawer extends StatelessWidget {
             OutlinedButton(
               style: OutlinedButton.styleFrom(
                 side: const BorderSide(color: Colors.white24),
-                foregroundColor: _text,
+                foregroundColor: CustomDrawer._text,
                 padding:
                     const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
                 shape: RoundedRectangleBorder(
                   borderRadius: BorderRadius.circular(10),
                 ),
               ),
-              onPressed: () => Navigator.pop(context, false),
+              onPressed: () => Navigator.of(dialogContext).pop(false),
               child: const Text('Cancelar'),
             ),
             // Cerrar sesión (dorado, estilo app)
             ElevatedButton.icon(
               style: ElevatedButton.styleFrom(
-                backgroundColor: _gold,
+                backgroundColor: CustomDrawer._gold,
                 foregroundColor: Colors.black,
                 padding:
                     const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
@@ -101,13 +115,14 @@ class CustomDrawer extends StatelessWidget {
                   borderRadius: BorderRadius.circular(10),
                 ),
               ),
-              onPressed: () => Navigator.pop(context, true),
+              onPressed: () => Navigator.of(dialogContext).pop(true),
               icon: const Icon(Icons.logout),
               label: const Text('Cerrar sesión'),
             ),
           ],
         ),
       );
+      if (!mounted) return;
       if (ok == true) {
         await _signOut();
       }
@@ -122,19 +137,24 @@ class CustomDrawer extends StatelessWidget {
       return InkWell(
         onTap: () => _go(route),
         borderRadius: BorderRadius.circular(12),
-        splashColor: _gold.withOpacity(.12),
+        splashColor: CustomDrawer._gold.withOpacity(.12),
         child: Container(
           padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 14),
           decoration: BoxDecoration(
-            color: selected ? _surfaceAlt : Colors.transparent,
+            color: selected ? CustomDrawer._surfaceAlt : Colors.transparent,
             borderRadius: BorderRadius.circular(12),
             border: Border.all(
-              color: selected ? _gold.withOpacity(.35) : Colors.white12,
+              color:
+                  selected ? CustomDrawer._gold.withOpacity(.35) : Colors.white12,
             ),
           ),
           child: Row(
             children: [
-              Icon(icon, color: selected ? _gold : _text, size: 22),
+              Icon(
+                icon,
+                color: selected ? CustomDrawer._gold : CustomDrawer._text,
+                size: 22,
+              ),
               const SizedBox(width: 10),
               Expanded(
                 child: Text(
@@ -142,14 +162,17 @@ class CustomDrawer extends StatelessWidget {
                   maxLines: 2,
                   overflow: TextOverflow.ellipsis,
                   style: TextStyle(
-                    color: selected ? _gold : _text,
+                    color:
+                        selected ? CustomDrawer._gold : CustomDrawer._text,
                     fontWeight: selected ? FontWeight.w700 : FontWeight.w500,
                   ),
                 ),
               ),
               Icon(
                 Icons.chevron_right,
-                color: selected ? _gold : _textMuted,
+                color: selected
+                    ? CustomDrawer._gold
+                    : CustomDrawer._textMuted,
                 size: 20,
               ),
             ],
@@ -199,15 +222,18 @@ class CustomDrawer extends StatelessWidget {
                           borderRadius: BorderRadius.circular(48),
                           child: CircleAvatar(
                             radius: 48,
-                            backgroundColor: _surfaceAlt,
+                            backgroundColor: CustomDrawer._surfaceAlt,
                             backgroundImage: (user?.photoURL != null &&
                                     user!.photoURL!.isNotEmpty)
                                 ? NetworkImage(user.photoURL!)
                                 : null,
                             child: (user?.photoURL == null ||
                                     (user?.photoURL?.isEmpty ?? true))
-                                ? const Icon(Icons.person,
-                                    color: _text, size: 56)
+                                ? const Icon(
+                                    Icons.person,
+                                    color: CustomDrawer._text,
+                                    size: 56,
+                                  )
                                 : null,
                           ),
                         ),
@@ -219,7 +245,7 @@ class CustomDrawer extends StatelessWidget {
                               const Text(
                                 '¡Saludos Colega!',
                                 style: TextStyle(
-                                  color: _textMuted,
+                                  color: CustomDrawer._textMuted,
                                   fontSize: 12,
                                 ),
                               ),
@@ -229,7 +255,7 @@ class CustomDrawer extends StatelessWidget {
                                 maxLines: 2,
                                 overflow: TextOverflow.ellipsis,
                                 style: const TextStyle(
-                                  color: _gold,
+                                  color: CustomDrawer._gold,
                                   fontSize: 20,
                                   fontWeight: FontWeight.w900,
                                   letterSpacing: .6,
@@ -243,7 +269,7 @@ class CustomDrawer extends StatelessWidget {
                                   maxLines: 1,
                                   overflow: TextOverflow.ellipsis,
                                   style: const TextStyle(
-                                    color: _textMuted,
+                                    color: CustomDrawer._textMuted,
                                     fontSize: 11,
                                   ),
                                 ),
@@ -267,7 +293,10 @@ class CustomDrawer extends StatelessWidget {
                     child: IconButton(
                       tooltip: 'Cerrar',
                       onPressed: () => Navigator.pop(context),
-                      icon: const Icon(Icons.close, color: _text),
+                      icon: const Icon(
+                        Icons.close,
+                        color: CustomDrawer._text,
+                      ),
                     ),
                   ),
                 ],
@@ -325,9 +354,10 @@ class CustomDrawer extends StatelessWidget {
                   children: [
                     OutlinedButton.icon(
                       style: OutlinedButton.styleFrom(
-                        side: const BorderSide(color: _goldDark, width: 1),
-                        foregroundColor: _gold,
-                        backgroundColor: _surface,
+                        side: const BorderSide(
+                            color: CustomDrawer._goldDark, width: 1),
+                        foregroundColor: CustomDrawer._gold,
+                        backgroundColor: CustomDrawer._surface,
                       ),
                       onPressed: _confirmSignOut,
                       icon: const Icon(Icons.logout_rounded, size: 18),

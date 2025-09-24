@@ -198,19 +198,44 @@ class _VideoScreenState extends State<VideoScreen> {
   }
 
   // ---------- UI helpers ----------
+  Future<void> _handleBack() async {
+    final navigator = Navigator.of(context);
+    final didPop = await navigator.maybePop();
+    if (!mounted || didPop || !navigator.mounted) return;
+    navigator.pushReplacementNamed('/home');
+  }
+
   Widget _topBackBar() {
-    return Container(
+    return Padding(
       padding: const EdgeInsets.fromLTRB(12, 12, 12, 6),
-      child: Row(
-        children: const [
-          Icon(Icons.arrow_back, size: 18, color: _CapColors.text),
-          SizedBox(width: 6),
-          Text(
-            'Regresar',
-            style:
-                TextStyle(color: _CapColors.text, fontWeight: FontWeight.w600),
+      child: InkWell(
+        onTap: _handleBack,
+        borderRadius: BorderRadius.circular(24),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 2, vertical: 2),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Container(
+                padding: const EdgeInsets.all(6),
+                decoration: BoxDecoration(
+                  color: Colors.white.withOpacity(.08),
+                  borderRadius: BorderRadius.circular(20),
+                ),
+                child: const Icon(Icons.arrow_back,
+                    size: 18, color: _CapColors.text),
+              ),
+              const SizedBox(width: 8),
+              const Text(
+                'Regresar',
+                style: TextStyle(
+                  color: _CapColors.text,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ],
           ),
-        ],
+        ),
       ),
     );
   }

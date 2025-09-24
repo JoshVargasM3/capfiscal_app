@@ -1,8 +1,10 @@
 import 'dart:async';
 import 'dart:ui' as ui;
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:firebase_core/firebase_core.dart';
+import 'package:firebase_app_check/firebase_app_check.dart';
 import 'firebase_options.dart';
 
 // Screens
@@ -15,22 +17,34 @@ import 'screens/chat.dart';
 import 'screens/user_profile_screen.dart';
 
 Future<void> main() async {
-  WidgetsFlutterBinding.ensureInitialized();
+  await runZonedGuarded(() async {
+    WidgetsFlutterBinding.ensureInitialized();
 
-  // ✅ Inicializa Firebase ANTES de runApp (evita I-COR000005).
-  if (Firebase.apps.isEmpty) {
-    await Firebase.initializeApp(
-      options: DefaultFirebaseOptions.currentPlatform,
-    );
-  }
+    // ✅ Inicializa Firebase ANTES de runApp (evita I-COR000005).
+    if (Firebase.apps.isEmpty) {
+      await Firebase.initializeApp(
+        options: DefaultFirebaseOptions.currentPlatform,
+      );
+    }
 
-  // Handler global: evita que errores burbujeen y cierren la app.
-  ui.PlatformDispatcher.instance.onError = (error, stack) {
-    // TODO: enviar a Crashlytics/Sentry si lo deseas
-    return true;
-  };
+    // 🔐 Activa App Check en desarrollo para silenciar los avisos del Storage.
+    if (!kIsWeb) {
+      if (kDebugMode || kProfileMode) {
+        await FirebaseAppCheck.instance.activate(
+          androidProvider: AndroidProvider.debug,
+          appleProvider: AppleProvider.debug,
+        );
+      } else {
+        await FirebaseAppCheck.instance.activate();
+      }
+    }
 
-  runZonedGuarded(() {
+    // Handler global: evita que errores burbujeen y cierren la app.
+    ui.PlatformDispatcher.instance.onError = (error, stack) {
+      // TODO: enviar a Crashlytics/Sentry si lo deseas
+      return true;
+    };
+
     runApp(const MyApp());
   }, (error, stack) {
     // TODO: log centralizado si lo deseas
