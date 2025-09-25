@@ -28,6 +28,13 @@ class _CapColors {
   static const Color goldDark = Color(0xFFB88F30);
 }
 
+class _ImageStreamHandle {
+  const _ImageStreamHandle(this.stream, this.listener);
+
+  final ImageStream stream;
+  final ImageStreamListener listener;
+}
+
 class _HomeScreenState extends State<HomeScreen> {
   final _scaffoldKey = GlobalKey<ScaffoldState>();
 
@@ -94,8 +101,10 @@ class _HomeScreenState extends State<HomeScreen> {
 
   // Aspect ratios por imagen (width / height).
   List<double?> _cursoAspect = [];
+  final List<_ImageStreamHandle> _prefetchHandles = [];
 
   Future<void> _loadCursos() async {
+    _disposePrefetchHandles();
     setState(() {
       _loadingCursos = true;
       _errorCursos = null;
@@ -135,21 +144,31 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   void _prefetchAspectRatios() {
+    if (!mounted) return;
+    _disposePrefetchHandles();
     for (int i = 0; i < _cursoUrls.length; i++) {
-      final imageProvider = Image.network(_cursoUrls[i]).image;
+      final provider = NetworkImage(_cursoUrls[i]);
+      final stream = provider.resolve(const ImageConfiguration());
       final listener = ImageStreamListener((ImageInfo info, bool _) {
         final w = info.image.width.toDouble();
         final h = info.image.height.toDouble();
-        if (w > 0 && h > 0) {
-          final ratio = w / h;
-          if (mounted) {
-            setState(() {
-              _cursoAspect[i] = ratio;
-            });
-          }
+        if (w > 0 && h > 0 && mounted) {
+          setState(() {
+            if (i < _cursoAspect.length) {
+              _cursoAspect[i] = w / h;
+            }
+          });
         }
-      }, onError: (dynamic _, __) {});
-      imageProvider.resolve(const ImageConfiguration()).addListener(listener);
+      }, onError: (dynamic _, __) {
+        if (mounted && i < _cursoAspect.length) {
+          setState(() {
+            _cursoAspect[i] = null;
+          });
+        }
+      });
+      stream.addListener(listener);
+      _prefetchHandles.add(_ImageStreamHandle(stream, listener));
+      precacheImage(provider, context);
     }
   }
 
@@ -175,6 +194,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
   @override
   void dispose() {
+    _disposePrefetchHandles();
     _autoTimer?.cancel();
     _pageCtrl.dispose();
     _searchCtrl.dispose();
@@ -198,6 +218,41 @@ class _HomeScreenState extends State<HomeScreen> {
     final minH = isLandscape ? 180.0 : 200.0;
 
     return rawH.clamp(minH, maxH);
+  }
+
+  void _disposePrefetchHandles() {
+    for (final handle in _prefetchHandles) {
+      handle.stream.removeListener(handle.listener);
+    }
+    _prefetchHandles.clear();
+  }
+
+  int? _carouselCacheWidth(BuildContext context) {
+    final mq = MediaQuery.maybeOf(context);
+    if (mq == null) return null;
+    final logicalWidth = (mq.size.width - 24).clamp(0.0, double.infinity);
+    final pxWidth = logicalWidth * mq.devicePixelRatio;
+    if (!pxWidth.isFinite || pxWidth <= 0) return null;
+    final clamped = pxWidth.clamp(600, 3600);
+    return clamped.round();
+  }
+
+  int? _fullscreenCacheWidth(BuildContext context) {
+    final mq = MediaQuery.maybeOf(context);
+    if (mq == null) return null;
+    final pxWidth = mq.size.width * mq.devicePixelRatio;
+    if (!pxWidth.isFinite || pxWidth <= 0) return null;
+    final clamped = pxWidth.clamp(800, 4096);
+    return clamped.round();
+  }
+
+  int? _fullscreenCacheHeight(BuildContext context) {
+    final mq = MediaQuery.maybeOf(context);
+    if (mq == null) return null;
+    final pxHeight = mq.size.height * mq.devicePixelRatio;
+    if (!pxHeight.isFinite || pxHeight <= 0) return null;
+    final clamped = pxHeight.clamp(800, 4096);
+    return clamped.round();
   }
 
   // -------- Visor Pantalla Completa ----------
@@ -230,6 +285,10 @@ class _HomeScreenState extends State<HomeScreen> {
                           child: Image.network(
                             url,
                             fit: BoxFit.contain,
+                            gaplessPlayback: true,
+                            cacheWidth: _fullscreenCacheWidth(context),
+                            cacheHeight: _fullscreenCacheHeight(context),
+                            filterQuality: FilterQuality.high,
                             loadingBuilder: (c, w, p) => p == null
                                 ? w
                                 : const SizedBox(
@@ -448,10 +507,14 @@ class _HomeScreenState extends State<HomeScreen> {
                                                 alignment: Alignment.center,
                                                 child: Image.network(
                                                   url,
-                                                  // 👉 rellena el contenedor manteniendo proporción
                                                   fit: BoxFit.cover,
                                                   width: double.infinity,
                                                   height: double.infinity,
+                                                  gaplessPlayback: true,
+                                                  cacheWidth:
+                                                      _carouselCacheWidth(context),
+                                                  filterQuality:
+                                                      FilterQuality.medium,
                                                   loadingBuilder: (c, w, p) =>
                                                       p == null
                                                           ? w
