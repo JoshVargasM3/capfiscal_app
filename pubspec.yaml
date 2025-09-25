@@ -26,6 +26,7 @@ dependencies:
   url_launcher: ^6.3.0
   shared_preferences: ^2.5.3
   image_picker: ^1.1.2     # <-- opcionalmente actualizado
+  connectivity_plus: ^6.1.0
 
 dependency_overrides:
   firebase_core_platform_interface: 6.0.0
