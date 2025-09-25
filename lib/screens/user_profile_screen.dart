@@ -480,26 +480,35 @@ class _UserProfileScreenState extends State<UserProfileScreen> {
   }
 
   Future<void> _signOut() async {
+    if (_signingOut) return;
     setState(() => _signingOut = true);
     try {
       await _auth.signOut();
-      if (!mounted) return;
-      Navigator.of(context, rootNavigator: true)
-          .pushNamedAndRemoveUntil('/', (route) => false);
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
+      ScaffoldMessenger.maybeOf(context)?.showSnackBar(
         SnackBar(content: Text('No se pudo cerrar sesión: $e')),
       );
+      return;
     } finally {
-      if (mounted) setState(() => _signingOut = false);
+      if (mounted) {
+        setState(() => _signingOut = false);
+      }
     }
+
+    if (!mounted) return;
+
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      Navigator.of(context, rootNavigator: true)
+          .pushNamedAndRemoveUntil('/login', (route) => false);
+    });
   }
 
   Future<void> _confirmSignOut() async {
     final ok = await showDialog<bool>(
       context: context,
-      builder: (_) => AlertDialog(
+      builder: (dialogContext) => AlertDialog(
         backgroundColor: _CapColors.surface,
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
         title: const Text('Cerrar sesión',
@@ -518,7 +527,7 @@ class _UserProfileScreenState extends State<UserProfileScreen> {
               shape: RoundedRectangleBorder(
                   borderRadius: BorderRadius.circular(10)),
             ),
-            onPressed: () => Navigator.pop(context, false),
+            onPressed: () => Navigator.of(dialogContext).pop(false),
             child: const Text('Cancelar'),
           ),
           // Cerrar sesión (dorado, estilo app)
@@ -530,7 +539,7 @@ class _UserProfileScreenState extends State<UserProfileScreen> {
               shape: RoundedRectangleBorder(
                   borderRadius: BorderRadius.circular(10)),
             ),
-            onPressed: () => Navigator.pop(context, true),
+            onPressed: () => Navigator.of(dialogContext).pop(true),
             icon: const Icon(Icons.logout),
             label: const Text('Cerrar sesión'),
           ),
