@@ -15,6 +15,9 @@ import 'screens/biblioteca_legal_screen.dart';
 import 'screens/video_screen.dart';
 import 'screens/chat.dart';
 import 'screens/user_profile_screen.dart';
+import 'screens/offline_screen.dart';
+import 'screens/offline_home_screen.dart';
+import 'services/connectivity_service.dart';
 
 Future<void> main() async {
   await runZonedGuarded(() async {
@@ -73,13 +76,67 @@ class MyApp extends StatelessWidget {
 }
 
 /// Puerta de arranque segura con timeout/retry y modo recuperación.
-class BootstrapGate extends StatelessWidget {
+class BootstrapGate extends StatefulWidget {
   const BootstrapGate({super.key});
 
   @override
+  State<BootstrapGate> createState() => _BootstrapGateState();
+}
+
+class _BootstrapGateState extends State<BootstrapGate> {
+  final ConnectivityService _connectivity = ConnectivityService();
+  StreamSubscription<ConnectivityStatus>? _subscription;
+  ConnectivityStatus _status = ConnectivityStatus.online;
+  bool _offlineMode = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _subscription = _connectivity.watchStatus().listen((status) {
+      if (!mounted) return;
+      setState(() {
+        _status = status;
+        if (status == ConnectivityStatus.online) {
+          _offlineMode = false;
+        }
+      });
+    });
+  }
+
+  @override
+  void dispose() {
+    _subscription?.cancel();
+    super.dispose();
+  }
+
+  bool get _isOffline => _status == ConnectivityStatus.offline;
+
+  Future<void> _retryConnection() async {
+    final status = await _connectivity.currentStatus();
+    if (!mounted) return;
+    setState(() {
+      _status = status;
+      if (status == ConnectivityStatus.online) {
+        _offlineMode = false;
+      }
+    });
+  }
+
+  @override
   Widget build(BuildContext context) {
+    if (_isOffline && !_offlineMode) {
+      return OfflineScreen(
+        onRetry: _retryConnection,
+        onContinueOffline: () {
+          setState(() {
+            _offlineMode = true;
+          });
+        },
+      );
+    }
+
     return FutureBuilder<bool>(
-      future: _safeInit(),
+      future: _safeInit(skipNetwork: _isOffline),
       builder: (context, snap) {
         if (snap.connectionState != ConnectionState.done) {
           return const _SplashScreen();
@@ -87,12 +144,17 @@ class BootstrapGate extends StatelessWidget {
         if (snap.hasError || snap.data != true) {
           return const _RecoveryScreen();
         }
+        if (_offlineMode) {
+          return OfflineHomeScreen(
+            onRetryOnline: _retryConnection,
+          );
+        }
         return const AuthGate();
       },
     );
   }
 
-  Future<bool> _safeInit() async {
+  Future<bool> _safeInit({required bool skipNetwork}) async {
     final prefs = await SharedPreferences.getInstance();
 
     final wasUnclean = prefs.getBool('boot_unclean') ?? false;
@@ -103,20 +165,25 @@ class BootstrapGate extends StatelessWidget {
         await _safeCleanup(prefs);
       }
 
-      // 🔒 Inicializaciones críticas (evita doble init de Firebase)
-      await _retry(() async {
-        if (Firebase.apps.isEmpty) {
-          await Firebase.initializeApp(
-            options: DefaultFirebaseOptions.currentPlatform,
-          );
-        }
-        // Aquí otras inits ligeras (Remote Config, etc.)
-      }, attempts: 3, delayMs: 300)
-          .timeout(const Duration(seconds: 10));
+      if (!skipNetwork) {
+        await _retry(() async {
+          if (Firebase.apps.isEmpty) {
+            await Firebase.initializeApp(
+              options: DefaultFirebaseOptions.currentPlatform,
+            );
+          }
+          // Aquí otras inits ligeras (Remote Config, etc.)
+        }, attempts: 3, delayMs: 300)
+            .timeout(const Duration(seconds: 10));
+      }
 
       await prefs.setBool('boot_unclean', false);
       return true;
     } catch (_) {
+      if (skipNetwork) {
+        await prefs.setBool('boot_unclean', false);
+        return true;
+      }
       return false;
     }
   }

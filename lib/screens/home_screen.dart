@@ -7,6 +7,7 @@ import 'package:url_launcher/url_launcher.dart';
 import '../widgets/custom_drawer.dart';
 import '../widgets/app_top_bar.dart';
 import '../widgets/app_bottom_nav.dart';
+import '../widgets/loading_skeleton.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -405,11 +406,7 @@ class _HomeScreenState extends State<HomeScreen> {
                         : _carouselHeight(context),
                     color: _CapColors.surface,
                     child: _loadingCursos
-                        ? const Center(
-                            child: CircularProgressIndicator(
-                              color: _CapColors.gold,
-                            ),
-                          )
+                        ? const HomeModuleSkeleton()
                         : (_errorCursos != null)
                             ? Center(
                                 child: Padding(
