@@ -40,6 +40,35 @@ La app CAPFISCAL está pensada como **ecosistema digital para el cumplimiento fi
 
 ---
 
+## 💳 Suscripciones y medios de pago
+
+- La app ahora integra **Stripe Payment Sheet** para cobrar la membresía mensual con
+  distintos métodos de pago (tarjetas, wallets, pagos diferidos) mediante una
+  experiencia nativa.
+- El backend debe exponer las Cloud Functions:
+  - `createStripeSubscriptionIntent` → crea el cliente/intent de pago y devuelve
+    `paymentIntentClientSecret`, `customerId`, `customerEphemeralKeySecret` y
+    `subscriptionId`.
+  - `finalizeStripeSubscription` → confirma el cobro y actualiza el documento del
+    usuario en Firestore con la vigencia de la suscripción.
+- Para inicializar Stripe en Flutter define las llaves en tiempo de compilación:
+
+  ```bash
+  flutter run \
+    --dart-define=STRIPE_PUBLISHABLE_KEY=pk_live_xxx \
+    --dart-define=STRIPE_PRICE_ID=price_xxx \
+    --dart-define=SUBSCRIPTION_MERCHANT_NAME="CAPFISCAL" \
+    --dart-define=STRIPE_MERCHANT_ID=merchant.com.capfiscal
+  ```
+
+- Si las llaves no están configuradas, la pantalla de suscripción mostrará un
+  recordatorio y se podrá seguir usando la activación manual.
+- Cada vez que el estado de Stripe se actualiza, la app refresca los datos de
+  la colección `users` y bloquea la descarga de archivos cuando la suscripción
+  caduca.
+
+---
+
 ## 🛠️ Stack Tecnológico
 
 - **Flutter & Dart** - Desarrollo multiplataforma nativo

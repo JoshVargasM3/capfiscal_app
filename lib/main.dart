@@ -18,6 +18,7 @@ import 'screens/user_profile_screen.dart';
 import 'screens/offline_screen.dart';
 import 'screens/offline_home_screen.dart';
 import 'services/connectivity_service.dart';
+import 'services/payment_service.dart';
 
 Future<void> main() async {
   await runZonedGuarded(() async {
@@ -39,6 +40,14 @@ Future<void> main() async {
         );
       } else {
         await FirebaseAppCheck.instance.activate();
+      }
+    }
+
+    try {
+      await SubscriptionPaymentService.instance.ensureInitialized();
+    } catch (e) {
+      if (kDebugMode) {
+        debugPrint('Stripe no configurado todavía: $e');
       }
     }
 

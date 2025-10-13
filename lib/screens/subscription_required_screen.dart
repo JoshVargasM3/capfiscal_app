@@ -2,6 +2,8 @@ import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:url_launcher/url_launcher.dart';
 
+import '../config/subscription_config.dart';
+import '../services/payment_service.dart';
 import '../services/subscription_service.dart';
 
 class SubscriptionRequiredScreen extends StatefulWidget {
@@ -28,8 +30,11 @@ class _SubscriptionRequiredScreenState
   bool _refreshing = false;
   bool _openingContact = false;
   bool _activatingManually = false;
+  bool _processingPayment = false;
   final _manualMethod = TextEditingController();
   final SubscriptionService _subscriptionService = SubscriptionService();
+  final SubscriptionPaymentService _paymentService =
+      SubscriptionPaymentService.instance;
 
   static const _bgTop = Color(0xFF0A0A0B);
   static const _bgMid = Color(0xFF2A2A2F);
@@ -159,6 +164,54 @@ class _SubscriptionRequiredScreenState
     }
   }
 
+  Future<void> _startPayment() async {
+    if (_processingPayment) return;
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Inicia sesión para completar el pago.')),
+      );
+      return;
+    }
+
+    setState(() => _processingPayment = true);
+    try {
+      final result = await _paymentService.startSubscriptionCheckout(
+        uid: user.uid,
+        email: user.email ?? '',
+      );
+
+      if (!mounted) return;
+      switch (result.status) {
+        case SubscriptionPaymentStatus.completed:
+          if (widget.onRefresh != null) {
+            await widget.onRefresh!.call();
+          }
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text(
+                  'Pago recibido. En cuanto confirmemos la suscripción se habilitará tu acceso.'),
+            ),
+          );
+          break;
+        case SubscriptionPaymentStatus.canceled:
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Pago cancelado por el usuario.'),
+            ),
+          );
+          break;
+      }
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('No pudimos procesar el pago: $e')),
+      );
+    } finally {
+      if (mounted) setState(() => _processingPayment = false);
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final status = widget.status;
@@ -221,6 +274,13 @@ class _SubscriptionRequiredScreenState
       SubscriptionState.pending => Colors.blueAccent,
       _ => _gold,
     };
+
+    final showPaymentSection = status.state == SubscriptionState.none ||
+        status.state == SubscriptionState.expired;
+    final showPaymentButton =
+        showPaymentSection && SubscriptionConfig.hasStripeConfiguration;
+    final showPaymentConfigHint =
+        showPaymentSection && !SubscriptionConfig.hasStripeConfiguration;
 
     return Container(
       decoration: const BoxDecoration(
@@ -301,6 +361,71 @@ class _SubscriptionRequiredScreenState
                             ),
                           ),
                           const SizedBox(height: 18),
+                          if (showPaymentSection) ...[
+                            Text(
+                              'Pagar suscripción',
+                              style: Theme.of(context)
+                                  .textTheme
+                                  .titleSmall
+                                  ?.copyWith(
+                                    color: Colors.white,
+                                    fontWeight: FontWeight.w700,
+                                  ),
+                            ),
+                            const SizedBox(height: 8),
+                            if (showPaymentButton)
+                              SizedBox(
+                                width: double.infinity,
+                                height: 46,
+                                child: ElevatedButton.icon(
+                                  onPressed:
+                                      _processingPayment ? null : _startPayment,
+                                  icon: _processingPayment
+                                      ? const SizedBox(
+                                          width: 18,
+                                          height: 18,
+                                          child: CircularProgressIndicator(
+                                            strokeWidth: 2,
+                                            valueColor:
+                                                AlwaysStoppedAnimation<Color>(
+                                                    Colors.black),
+                                          ),
+                                        )
+                                      : const Icon(Icons.credit_card),
+                                  label: Text(
+                                    _processingPayment
+                                        ? 'Procesando…'
+                                        : 'Pagar y activar',
+                                    style: const TextStyle(
+                                        fontWeight: FontWeight.w700),
+                                  ),
+                                  style: ElevatedButton.styleFrom(
+                                    backgroundColor: _gold,
+                                    foregroundColor: Colors.black,
+                                    shape: RoundedRectangleBorder(
+                                      borderRadius: BorderRadius.circular(14),
+                                    ),
+                                  ),
+                                ),
+                              )
+                            else if (showPaymentConfigHint)
+                              Container(
+                                padding: const EdgeInsets.all(12),
+                                decoration: BoxDecoration(
+                                  color: const Color(0xFF2A2A30),
+                                  borderRadius: BorderRadius.circular(12),
+                                  border: Border.all(color: Colors.white12),
+                                ),
+                                child: const Text(
+                                  'Configura las llaves de Stripe para habilitar el pago directo.',
+                                  style: TextStyle(
+                                    color: Color(0xFFBEBEC6),
+                                    fontSize: 13,
+                                  ),
+                                ),
+                              ),
+                            const SizedBox(height: 20),
+                          ],
                           Text(
                             'Activar manualmente',
                             style:

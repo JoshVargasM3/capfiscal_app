@@ -12,6 +12,8 @@ import '../widgets/app_top_bar.dart';
 import '../widgets/app_bottom_nav.dart';
 import '../widgets/custom_drawer.dart';
 
+import '../helpers/subscription_guard.dart';
+
 import '../helpers/favorites_manager.dart';
 import '../helpers/view_mode.dart';
 
@@ -103,6 +105,7 @@ class _BibliotecaLegalScreenState extends State<BibliotecaLegalScreen> {
   }
 
   Future<void> _downloadAndOpenFile(Reference ref) async {
+    if (!await SubscriptionGuard.ensureActive(context)) return;
     try {
       final dir = await getApplicationDocumentsDirectory();
       final file = File('${dir.path}/${ref.name}');
