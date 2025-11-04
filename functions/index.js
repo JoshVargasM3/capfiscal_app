@@ -20,6 +20,121 @@ function getStripe() {
   return stripeInstance;
 }
 
+function normalizeStripeStatus(status) {
+  switch (status) {
+    case 'active':
+    case 'trialing':
+      return 'active';
+    case 'past_due':
+    case 'incomplete':
+    case 'incomplete_expired':
+    case 'paused':
+      return 'pending';
+    case 'canceled':
+    case 'unpaid':
+      return 'expired';
+    default:
+      return status || 'pending';
+  }
+}
+
+async function resolvePaymentMethodLabel(subscription) {
+  const stripe = getStripe();
+  const visitedIds = new Set();
+  const candidates = [];
+
+  if (subscription.default_payment_method) {
+    candidates.push(subscription.default_payment_method);
+  }
+
+  let latestInvoice = subscription.latest_invoice;
+  if (typeof latestInvoice === 'string') {
+    try {
+      latestInvoice = await stripe.invoices.retrieve(latestInvoice, {
+        expand: ['payment_intent.payment_method'],
+      });
+    } catch (err) {
+      console.error('No se pudo obtener la factura más reciente de Stripe:', err.message);
+      latestInvoice = null;
+    }
+  } else if (latestInvoice && typeof latestInvoice === 'object') {
+    let paymentIntent = latestInvoice.payment_intent;
+    if (typeof paymentIntent === 'string') {
+      try {
+        paymentIntent = await stripe.paymentIntents.retrieve(paymentIntent, {
+          expand: ['payment_method'],
+        });
+        latestInvoice = { ...latestInvoice, payment_intent: paymentIntent };
+      } catch (err) {
+        console.error('No se pudo obtener el PaymentIntent asociado:', err.message);
+      }
+    }
+  }
+
+  if (latestInvoice?.payment_intent?.payment_method) {
+    candidates.push(latestInvoice.payment_intent.payment_method);
+  }
+  if (latestInvoice?.payment_method) {
+    candidates.push(latestInvoice.payment_method);
+  }
+
+  let pendingSetupIntent = subscription.pending_setup_intent;
+  if (typeof pendingSetupIntent === 'string') {
+    try {
+      pendingSetupIntent = await stripe.setupIntents.retrieve(pendingSetupIntent, {
+        expand: ['payment_method'],
+      });
+    } catch (err) {
+      console.error('No se pudo obtener el SetupIntent pendiente:', err.message);
+      pendingSetupIntent = null;
+    }
+  }
+
+  if (pendingSetupIntent?.payment_method) {
+    candidates.push(pendingSetupIntent.payment_method);
+  }
+
+  for (const candidate of candidates) {
+    if (!candidate) continue;
+    try {
+      let paymentMethod = candidate;
+      if (typeof candidate === 'string') {
+        if (visitedIds.has(candidate)) {
+          continue;
+        }
+        visitedIds.add(candidate);
+        paymentMethod = await stripe.paymentMethods.retrieve(candidate);
+      }
+
+      const label = describePaymentMethod(paymentMethod);
+      if (label) {
+        return label;
+      }
+    } catch (err) {
+      console.error('No se pudo obtener el método de pago de Stripe:', err.message);
+    }
+  }
+
+  return null;
+}
+
+function describePaymentMethod(paymentMethod) {
+  if (!paymentMethod) return null;
+
+  if (paymentMethod.card) {
+    const brand = paymentMethod.card.brand || 'Tarjeta';
+    const brandLabel = brand.charAt(0).toUpperCase() + brand.slice(1);
+    return `${brandLabel} •••• ${paymentMethod.card.last4}`;
+  }
+
+  if (paymentMethod.type) {
+    const typeLabel = paymentMethod.type.charAt(0).toUpperCase() + paymentMethod.type.slice(1);
+    return `Stripe ${typeLabel}`;
+  }
+
+  return null;
+}
+
 // ===== Webhook de Stripe (sincroniza estado en Firestore) =====
 exports.stripeWebhook = functions.https.onRequest(async (req, res) => {
   let event = req.body;
@@ -52,16 +167,42 @@ exports.stripeWebhook = functions.https.onRequest(async (req, res) => {
 
         if (!q.empty) {
           const ref = db.collection('users').doc(q.docs[0].id);
-          const status = sub.status; // active | trialing | past_due | canceled | incomplete
+
+          const periodStart = sub.current_period_start
+            ? new admin.firestore.Timestamp(sub.current_period_start, 0)
+            : null;
           const periodEnd = sub.current_period_end
             ? new admin.firestore.Timestamp(sub.current_period_end, 0)
             : null;
+          const cancelAtSeconds = sub.cancel_at || (sub.cancel_at_period_end ? sub.current_period_end : null);
+          const cancelAt = cancelAtSeconds
+            ? new admin.firestore.Timestamp(cancelAtSeconds, 0)
+            : null;
 
-          await ref.set({
-            subscriptionStatus: status,
-            currentPeriodEnd: periodEnd,
-            entitlements: { library: status === 'active' || status === 'trialing' },
-          }, { merge: true });
+          const normalizedStatus = normalizeStripeStatus(sub.status);
+          const isDeletion = event.type === 'customer.subscription.deleted';
+
+          const paymentMethodLabel = await resolvePaymentMethodLabel(sub);
+
+          const updatePayload = {
+            stripeSubscriptionId: sub.id,
+            subscriptionStatus: sub.status,
+            'subscription.startDate': periodStart,
+            'subscription.endDate': periodEnd,
+            'subscription.graceEndsAt': cancelAt,
+            'subscription.status': normalizedStatus,
+            'subscription.updatedAt': admin.firestore.FieldValue.serverTimestamp(),
+            updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+            entitlements: { library: normalizedStatus === 'active' },
+          };
+
+          if (paymentMethodLabel) {
+            updatePayload['subscription.paymentMethod'] = paymentMethodLabel;
+          } else if (isDeletion) {
+            updatePayload['subscription.paymentMethod'] = null;
+          }
+
+          await ref.set(updatePayload, { merge: true });
         }
         break;
       }
@@ -78,6 +219,9 @@ exports.stripeWebhook = functions.https.onRequest(async (req, res) => {
           const ref = db.collection('users').doc(q.docs[0].id);
           await ref.set({
             subscriptionStatus: 'past_due',
+            'subscription.status': 'pending',
+            'subscription.updatedAt': admin.firestore.FieldValue.serverTimestamp(),
+            updatedAt: admin.firestore.FieldValue.serverTimestamp(),
             entitlements: { library: false },
           }, { merge: true });
         }
@@ -189,7 +333,19 @@ exports.createSubscription = functions.https.onCall(async (data, context) => {
   }
 
   // estado inicial
-  await userRef.set({ subscriptionStatus: sub.status ?? 'incomplete' }, { merge: true });
+  const normalizedStatus = normalizeStripeStatus(sub.status);
+  await userRef.set({
+    stripeSubscriptionId: sub.id,
+    subscriptionStatus: sub.status ?? 'incomplete',
+    'subscription.status': normalizedStatus,
+    'subscription.paymentMethod': null,
+    'subscription.startDate': null,
+    'subscription.endDate': null,
+    'subscription.graceEndsAt': null,
+    'subscription.updatedAt': admin.firestore.FieldValue.serverTimestamp(),
+    updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    entitlements: { library: false },
+  }, { merge: true });
 
   return {
     subscriptionId: sub.id,
