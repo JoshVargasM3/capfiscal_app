@@ -1,6 +1,7 @@
 import 'dart:io' show Platform;
 
 import 'package:cloud_functions/cloud_functions.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_stripe/flutter_stripe.dart';
@@ -77,6 +78,19 @@ class SubscriptionPaymentService {
     ThemeMode appearance = ThemeMode.system,
   }) async {
     await ensureInitialized();
+
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null || user.uid != uid) {
+      throw StateError('Debes iniciar sesión nuevamente para continuar con el pago.');
+    }
+
+    try {
+      await user.getIdToken(true);
+    } catch (error) {
+      throw StateError(
+        'No pudimos validar tu sesión con Firebase. Intenta iniciar sesión de nuevo.',
+      );
+    }
 
     // 1) Customer
     final HttpsCallableResult<dynamic> cust =

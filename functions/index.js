@@ -12,11 +12,12 @@ const db = admin.firestore();
 let stripeInstance = null;
 function getStripe() {
   const cfg = functions.config();
-  const key = cfg && cfg.stripe && cfg.stripe.secret ? cfg.stripe.secret : null;
+  const key = process.env.STRIPE_SECRET_KEY
+    || (cfg && cfg.stripe && cfg.stripe.secret ? cfg.stripe.secret : null);
   if (!key) {
     throw new Error(
-      'Missing Stripe secret (functions.config().stripe.secret). ' +
-      'Set it with: firebase functions:config:set stripe.secret="sk_test_..."'
+      'Missing Stripe secret. Configure it with either the STRIPE_SECRET_KEY ' +
+      'env variable or firebase functions:config:set stripe.secret="sk_test_..."'
     );
   }
   if (!stripeInstance) {
@@ -149,8 +150,14 @@ exports.stripeWebhook = functions.https.onRequest(async (req, res) => {
 
   try {
     const cfg = functions.config();
-    const wh = cfg && cfg.stripe && cfg.stripe.webhook_secret ? cfg.stripe.webhook_secret : null;
-    if (!wh) throw new Error('Missing webhook secret (functions.config().stripe.webhook_secret).');
+    const wh = process.env.STRIPE_WEBHOOK_SECRET
+      || (cfg && cfg.stripe && cfg.stripe.webhook_secret ? cfg.stripe.webhook_secret : null);
+    if (!wh) {
+      throw new Error(
+        'Missing Stripe webhook secret. Configure STRIPE_WEBHOOK_SECRET env ' +
+        'or firebase functions:config:set stripe.webhook_secret="whsec_..."'
+      );
+    }
 
     const stripe = getStripe();
     event = stripe.webhooks.constructEvent(req.rawBody, sig, wh);
@@ -310,9 +317,12 @@ exports.createSubscription = functions.https.onCall(async (data, context) => {
   const uid = assertAuth(context);
 
   const cfg = functions.config();
-  const priceId = cfg?.stripe?.price_id;
+  const priceId = process.env.STRIPE_PRICE_ID || cfg?.stripe?.price_id;
   if (!priceId) {
-    throw new functions.https.HttpsError('failed-precondition', 'Falta stripe.price_id en functions:config');
+    throw new functions.https.HttpsError(
+      'failed-precondition',
+      'Falta STRIPE_PRICE_ID (env) o stripe.price_id en functions:config'
+    );
   }
 
   const userRef = db.collection('users').doc(uid);
