@@ -255,16 +255,34 @@ exports.stripeWebhook = functions.https.onRequest(async (req, res) => {
    ========================================= */
 
 // helper: exige auth
-function assertAuth(context) {
-  if (!context.auth || !context.auth.uid) {
-    throw new functions.https.HttpsError('unauthenticated', 'Auth requerida');
+async function assertAuth(context, data) {
+  let fallbackToken = null;
+
+  if (data && Object.prototype.hasOwnProperty.call(data, '__authToken')) {
+    fallbackToken = data.__authToken;
+    delete data.__authToken;
   }
-  return context.auth.uid;
+
+  if (context.auth && context.auth.uid) {
+    return context.auth.uid;
+  }
+
+  if (fallbackToken) {
+    try {
+      const decoded = await admin.auth().verifyIdToken(fallbackToken);
+      return decoded.uid;
+    } catch (err) {
+      console.error('ID token inválido recibido en callable:', err.message);
+      throw new functions.https.HttpsError('unauthenticated', 'Auth inválida');
+    }
+  }
+
+  throw new functions.https.HttpsError('unauthenticated', 'Auth requerida');
 }
 
 // 1) Crear/recuperar Customer y guardarlo en users/{uid}.stripeCustomerId
 exports.createStripeCustomer = functions.https.onCall(async (data, context) => {
-  const uid = assertAuth(context);
+  const uid = await assertAuth(context, data);
   const userRef = db.collection('users').doc(uid);
   const snap = await userRef.get();
   const current = snap.exists ? snap.data() : {};
@@ -291,7 +309,7 @@ exports.createStripeCustomer = functions.https.onCall(async (data, context) => {
 
 // 2) Crear Ephemeral Key (requerido por Payment Sheet)
 exports.createEphemeralKey = functions.https.onCall(async (data, context) => {
-  const uid = assertAuth(context);
+  const uid = await assertAuth(context, data);
   const apiVersion = data?.api_version;
   if (!apiVersion) {
     throw new functions.https.HttpsError('invalid-argument', 'api_version requerido');
@@ -314,7 +332,7 @@ exports.createEphemeralKey = functions.https.onCall(async (data, context) => {
 
 // 3) Crear suscripción (default_incomplete) y devolver client_secret del PaymentIntent
 exports.createSubscription = functions.https.onCall(async (data, context) => {
-  const uid = assertAuth(context);
+  const uid = await assertAuth(context, data);
 
   const cfg = functions.config();
   const priceId = process.env.STRIPE_PRICE_ID || cfg?.stripe?.price_id;
@@ -371,7 +389,7 @@ exports.createSubscription = functions.https.onCall(async (data, context) => {
 
 // 4) Portal del cliente (opcional)
 exports.createPortalSession = functions.https.onCall(async (data, context) => {
-  const uid = assertAuth(context);
+  const uid = await assertAuth(context, data);
   const userRef = db.collection('users').doc(uid);
   const doc = await userRef.get();
   const { stripeCustomerId } = doc.data() || {};
@@ -390,7 +408,15 @@ exports.createPortalSession = functions.https.onCall(async (data, context) => {
 });
 
 exports.ping = functions.https.onCall(async (data, context) => {
-  console.log('PING auth?', !!context.auth, 'uid', context.auth?.uid, 'app?', !!context.app);
-  return { uid: context.auth?.uid ?? null, appCheck: !!context.app };
+  let uid = context.auth?.uid ?? null;
+  if (!uid) {
+    try {
+      uid = await assertAuth(context, data);
+    } catch (err) {
+      uid = null;
+    }
+  }
+  console.log('PING auth?', !!context.auth, 'uid', uid, 'app?', !!context.app);
+  return { uid, appCheck: !!context.app };
 });
 

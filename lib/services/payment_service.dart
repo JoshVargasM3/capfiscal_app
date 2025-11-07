@@ -184,24 +184,28 @@ class SubscriptionPaymentService {
       );
     }
 
-    // 2) Refresca ID token.
-    await user.getIdToken(true);
-
-    // 3) Llamada con posible reintento si el backend responde unauthenticated.
+    // 2) Llamada con posible reintento si el backend responde unauthenticated.
     final callable = _functions.httpsCallable(
       name,
       options: HttpsCallableOptions(timeout: const Duration(seconds: 60)),
     );
 
-    try {
-      final res = await callable.call(data ?? const <String, dynamic>{});
+    Future<dynamic> invoke() async {
+      final token = await user!.getIdToken(true);
+      final payload = <String, dynamic>{
+        '__authToken': token,
+        if (data != null) ...data,
+      };
+      final res = await callable.call(payload);
       return res.data;
+    }
+
+    try {
+      return await invoke();
     } on FirebaseFunctionsException catch (e) {
       if (e.code == 'unauthenticated') {
         // Fuerza refresh y reintenta 1 vez por si el token expiró en tránsito
-        await user.getIdToken(true);
-        final res = await callable.call(data ?? const <String, dynamic>{});
-        return res.data;
+        return await invoke();
       }
       rethrow;
     }

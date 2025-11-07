@@ -184,13 +184,38 @@ class _SubscriptionRequiredScreenState
       if (!mounted) return;
       switch (result.status) {
         case SubscriptionPaymentStatus.completed:
+          bool updated = true;
+          try {
+            final now = DateTime.now().toUtc();
+            await _subscriptionService.updateSubscription(
+              user.uid,
+              startDate: now,
+              endDate: now.add(const Duration(days: 30)),
+              paymentMethod: 'Stripe',
+              status: 'active',
+            );
+          } catch (e) {
+            updated = false;
+            if (mounted) {
+              ScaffoldMessenger.of(context).showSnackBar(
+                SnackBar(
+                  content: Text(
+                    'Pago recibido pero no pudimos actualizar tu acceso: $e',
+                  ),
+                ),
+              );
+            }
+          }
           if (widget.onRefresh != null) {
             await widget.onRefresh!.call();
           }
           ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
+            SnackBar(
               content: Text(
-                  'Pago recibido. En cuanto confirmemos la suscripción se habilitará tu acceso.'),
+                updated
+                    ? 'Pago confirmado. Activamos tu acceso por 30 días.'
+                    : 'Pago recibido. En cuanto confirmemos la suscripción se habilitará tu acceso.',
+              ),
             ),
           );
           break;
