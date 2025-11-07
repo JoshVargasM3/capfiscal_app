@@ -101,11 +101,24 @@ class SubscriptionPaymentService {
     }
 
     // 3) Crear suscripción (regresa clientSecret del PaymentIntent)
+    final String effectivePriceId = priceId ?? SubscriptionConfig.stripePriceId;
+    if (effectivePriceId.isEmpty) {
+      throw StateError(
+        'No encontramos un precio válido de Stripe. Define STRIPE_PRICE_ID.',
+      );
+    }
+
+    final Map<String, dynamic> metadataPayload = <String, dynamic>{
+      if (metadata != null) ...metadata,
+      'uid': uid,
+      if (email.isNotEmpty) 'email': email,
+    };
+
     final HttpsCallableResult<dynamic> sub = await _functions
         .httpsCallable('createSubscription')
         .call(<String, dynamic>{
-      if (priceId != null) 'priceId': priceId,
-      if (metadata != null) 'metadata': metadata,
+      'priceId': effectivePriceId,
+      if (metadataPayload.isNotEmpty) 'metadata': metadataPayload,
     });
 
     final Map<String, dynamic> subData =

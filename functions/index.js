@@ -306,9 +306,42 @@ exports.createSubscription = functions.https.onCall(async (data, context) => {
   const uid = assertAuth(context);
 
   const cfg = functions.config();
-  const priceId = cfg?.stripe?.price_id;
+  const requestedPriceId = typeof data?.priceId === 'string'
+    ? data.priceId.trim()
+    : '';
+  const priceId = requestedPriceId || cfg?.stripe?.price_id;
   if (!priceId) {
-    throw new functions.https.HttpsError('failed-precondition', 'Falta stripe.price_id en functions:config');
+    throw new functions.https.HttpsError(
+      'failed-precondition',
+      'Falta priceId (configura stripe.price_id o envíalo en la llamada).',
+    );
+  }
+
+  let metadata;
+  const metadataInput = data?.metadata;
+  if (metadataInput && typeof metadataInput === 'object' && !Array.isArray(metadataInput)) {
+    metadata = {};
+    Object.entries(metadataInput).forEach(([key, value]) => {
+      if (value === undefined || value === null) {
+        return;
+      }
+      if (typeof value === 'string') {
+        metadata[key] = value;
+        return;
+      }
+      if (typeof value === 'number' || typeof value === 'boolean') {
+        metadata[key] = value.toString();
+        return;
+      }
+      try {
+        metadata[key] = JSON.stringify(value);
+      } catch (err) {
+        console.error('No se pudo serializar metadata para Stripe', key, err);
+      }
+    });
+    if (Object.keys(metadata).length === 0) {
+      metadata = undefined;
+    }
   }
 
   const userRef = db.collection('users').doc(uid);
@@ -325,6 +358,7 @@ exports.createSubscription = functions.https.onCall(async (data, context) => {
     payment_behavior: 'default_incomplete',
     payment_settings: { save_default_payment_method: 'on_subscription' },
     expand: ['latest_invoice.payment_intent'],
+    ...(metadata ? { metadata } : {}),
   });
 
   const pi = sub?.latest_invoice?.payment_intent;
@@ -342,6 +376,7 @@ exports.createSubscription = functions.https.onCall(async (data, context) => {
     'subscription.startDate': null,
     'subscription.endDate': null,
     'subscription.graceEndsAt': null,
+    'subscription.priceId': priceId,
     'subscription.updatedAt': admin.firestore.FieldValue.serverTimestamp(),
     updatedAt: admin.firestore.FieldValue.serverTimestamp(),
     entitlements: { library: false },
