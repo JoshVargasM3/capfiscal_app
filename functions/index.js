@@ -26,6 +26,12 @@ function getStripe() {
   return stripeInstance;
 }
 
+function normalizeEmail(email) {
+  if (!email || typeof email !== 'string') return null;
+  const trimmed = email.trim().toLowerCase();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
 function ensureCheckoutSuccessUrl(url) {
   if (!url) return url;
   if (url.includes('session_id={CHECKOUT_SESSION_ID}')) {
@@ -53,12 +59,18 @@ async function getOrCreateStripeCustomer(uid) {
     console.error('No se pudo obtener el usuario de Firebase Auth:', err.message);
   }
 
+  const normalizedEmail = normalizeEmail(email);
+
   const customer = await stripe.customers.create({
-    email,
+    email: normalizedEmail || undefined,
     metadata: { uid },
   });
 
-  await userRef.set({ stripeCustomerId: customer.id }, { merge: true });
+  const updates = { stripeCustomerId: customer.id };
+  if (normalizedEmail) {
+    updates.email = normalizedEmail;
+  }
+  await userRef.set(updates, { merge: true });
   return { customerId: customer.id, existed: false };
 }
 
@@ -101,6 +113,7 @@ function describePaymentMethod(paymentMethod) {
 }
 
 async function resolvePaymentMethodLabel(subscription) {
+  if (!subscription) return null;
   const stripe = getStripe();
   const visitedIds = new Set();
   const candidates = [];
@@ -177,6 +190,258 @@ async function resolvePaymentMethodLabel(subscription) {
   return null;
 }
 
+async function findUserRefByEmail(email) {
+  const normalized = normalizeEmail(email);
+  if (!normalized) return null;
+
+  try {
+    const userRecord = await admin.auth().getUserByEmail(normalized);
+    if (userRecord?.uid) {
+      return { uid: userRecord.uid, ref: db.collection('users').doc(userRecord.uid) };
+    }
+  } catch (err) {
+    if (err.code !== 'auth/user-not-found') {
+      console.error('Error buscando usuario por email en Auth:', err.message);
+    }
+  }
+
+  try {
+    const snapshot = await db.collection('users')
+      .where('email', '==', normalized)
+      .limit(1)
+      .get();
+    if (!snapshot.empty) {
+      const doc = snapshot.docs[0];
+      return { uid: doc.id, ref: db.collection('users').doc(doc.id) };
+    }
+  } catch (err) {
+    console.error('Error consultando Firestore por email:', err.message);
+  }
+
+  return null;
+}
+
+async function resolveUserRefFromStripeContext({ customerId, email }) {
+  let lookupEmail = normalizeEmail(email);
+
+  if (customerId) {
+    try {
+      const q = await db.collection('users')
+        .where('stripeCustomerId', '==', customerId)
+        .limit(1)
+        .get();
+      if (!q.empty) {
+        const doc = q.docs[0];
+        const ref = db.collection('users').doc(doc.id);
+        const data = doc.data() || {};
+        if (!lookupEmail && data.email) {
+          lookupEmail = normalizeEmail(data.email);
+        }
+        return { uid: doc.id, ref, email: lookupEmail || data.email || null };
+      }
+    } catch (err) {
+      console.error('Error buscando usuario por customerId:', err.message);
+    }
+  }
+
+  if (!lookupEmail && customerId) {
+    try {
+      const stripe = getStripe();
+      const customer = await stripe.customers.retrieve(customerId);
+      if (customer && !customer.deleted) {
+        lookupEmail = normalizeEmail(customer.email);
+      }
+    } catch (err) {
+      console.error('No se pudo obtener el cliente de Stripe:', err.message);
+    }
+  }
+
+  if (!lookupEmail) {
+    return null;
+  }
+
+  const result = await findUserRefByEmail(lookupEmail);
+  if (result) {
+    return { ...result, email: lookupEmail, customerId };
+  }
+
+  return null;
+}
+
+function toTimestamp(seconds) {
+  if (!seconds) return null;
+  try {
+    return new admin.firestore.Timestamp(seconds, 0);
+  } catch (err) {
+    return null;
+  }
+}
+
+function shouldGrantAccess(status) {
+  if (!status) return false;
+  const normalized = status.trim().toLowerCase();
+  return normalized === 'active'
+    || normalized === 'trialing'
+    || normalized === 'manual_active'
+    || normalized === 'grace';
+}
+
+async function applyStripeSubscriptionToUser({
+  userRef,
+  uid,
+  subscription,
+  customerId,
+  overrideStatus,
+  ensureEmail,
+}) {
+  if (!subscription) {
+    throw new Error('subscription requerido para sincronizar.');
+  }
+
+  const periodStart = toTimestamp(subscription.current_period_start);
+  const periodEnd = toTimestamp(subscription.current_period_end);
+  const cancelAt = toTimestamp(
+    subscription.cancel_at
+    || (subscription.cancel_at_period_end ? subscription.current_period_end : null),
+  );
+
+  const normalizedStatus = normalizeStripeStatus(subscription.status);
+  const effectiveStatus = overrideStatus || normalizedStatus;
+  const accessGranted = shouldGrantAccess(effectiveStatus);
+  const paymentMethodLabel = await resolvePaymentMethodLabel(subscription);
+
+  const updatePayload = {
+    stripeSubscriptionId: subscription.id,
+    subscriptionStatus: subscription.status ?? normalizedStatus,
+    'subscription.status': effectiveStatus,
+    'subscription.paymentMethod': paymentMethodLabel || null,
+    'subscription.startDate': periodStart,
+    'subscription.endDate': periodEnd,
+    'subscription.graceEndsAt': cancelAt,
+    'subscription.updatedAt': admin.firestore.FieldValue.serverTimestamp(),
+    updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    entitlements: { library: accessGranted },
+  };
+
+  if (customerId) {
+    updatePayload.stripeCustomerId = customerId;
+  }
+
+  if (ensureEmail) {
+    updatePayload.email = ensureEmail;
+  }
+
+  await userRef.set(updatePayload, { merge: true });
+
+  return {
+    status: effectiveStatus,
+    endDate: periodEnd ? periodEnd.toDate().toISOString() : null,
+    accessGranted,
+  };
+}
+
+async function applyManualSubscription({
+  userRef,
+  customerId,
+  paymentMethod,
+  durationDays,
+  status,
+  ensureEmail,
+}) {
+  const now = admin.firestore.Timestamp.now();
+  const safeDuration = Math.max(1, Math.min(365, Math.round(durationDays || 30)));
+  const endDate = admin.firestore.Timestamp.fromDate(new Date(
+    now.toDate().getTime() + safeDuration * 24 * 60 * 60 * 1000,
+  ));
+
+  const finalStatus = status || 'manual_active';
+  const accessGranted = shouldGrantAccess(finalStatus);
+
+  const updatePayload = {
+    subscriptionStatus: finalStatus,
+    'subscription.status': finalStatus,
+    'subscription.paymentMethod': paymentMethod || 'Stripe Checkout',
+    'subscription.startDate': now,
+    'subscription.endDate': endDate,
+    'subscription.graceEndsAt': admin.firestore.FieldValue.delete(),
+    'subscription.updatedAt': admin.firestore.FieldValue.serverTimestamp(),
+    updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    entitlements: { library: accessGranted },
+  };
+
+  if (customerId) {
+    updatePayload.stripeCustomerId = customerId;
+  }
+
+  if (ensureEmail) {
+    updatePayload.email = ensureEmail;
+  }
+
+  await userRef.set(updatePayload, { merge: true });
+
+  return {
+    status: finalStatus,
+    endDate: endDate.toDate().toISOString(),
+    accessGranted,
+  };
+}
+
+async function findActiveSubscriptionForEmail(email, priceId) {
+  const normalizedEmail = normalizeEmail(email);
+  if (!normalizedEmail) return null;
+
+  const stripe = getStripe();
+  try {
+    const customers = await stripe.customers.list({ email: normalizedEmail, limit: 10 });
+    let bestMatch = null;
+
+    for (const customer of customers.data) {
+      if (!customer || customer.deleted) continue;
+
+      try {
+        const subs = await stripe.subscriptions.list({
+          customer: customer.id,
+          status: 'all',
+          limit: 10,
+          expand: ['data.default_payment_method', 'data.latest_invoice.payment_intent'],
+        });
+
+        for (const sub of subs.data) {
+          if (!sub) continue;
+          const matchesPrice = !priceId
+            || sub.items?.data?.some((item) => item?.price?.id === priceId);
+          if (!matchesPrice) continue;
+
+          const normalizedStatus = normalizeStripeStatus(sub.status);
+          const accessReady = shouldGrantAccess(normalizedStatus);
+          const score = (sub.current_period_end || 0) + (accessReady ? 10_000_000_000 : 0);
+
+          if (!bestMatch || score > bestMatch.score) {
+            bestMatch = {
+              customer,
+              subscription: sub,
+              normalizedStatus,
+              score,
+            };
+          }
+        }
+      } catch (err) {
+        console.error('No se pudieron listar suscripciones para el cliente:', err.message);
+      }
+    }
+
+    if (!bestMatch) return null;
+    return {
+      customer: bestMatch.customer,
+      subscription: bestMatch.subscription,
+      normalizedStatus: bestMatch.normalizedStatus,
+    };
+  } catch (err) {
+    console.error('Error buscando clientes de Stripe por email:', err.message);
+    return null;
+  }
+}
+
 /* ==============================================
    WEBHOOK: sincroniza estados en Firestore (users)
    ============================================== */
@@ -210,45 +475,26 @@ exports.stripeWebhook = functions.https.onRequest(async (req, res) => {
         const sub = event.data.object;
         const customerId = sub.customer;
 
-        const q = await db.collection('users')
-          .where('stripeCustomerId', '==', customerId)
-          .limit(1).get();
+        const userContext = await resolveUserRefFromStripeContext({
+          customerId,
+          email: sub.customer_email,
+        });
 
-        if (!q.empty) {
-          const ref = db.collection('users').doc(q.docs[0].id);
-
-          const periodStart = sub.current_period_start
-            ? new admin.firestore.Timestamp(sub.current_period_start, 0)
-            : null;
-
-          const periodEnd = sub.current_period_end
-            ? new admin.firestore.Timestamp(sub.current_period_end, 0)
-            : null;
-
-          const cancelAtSeconds = sub.cancel_at || (sub.cancel_at_period_end ? sub.current_period_end : null);
-          const cancelAt = cancelAtSeconds
-            ? new admin.firestore.Timestamp(cancelAtSeconds, 0)
-            : null;
-
-          const normalizedStatus = normalizeStripeStatus(sub.status);
-          const isDeletion = event.type === 'customer.subscription.deleted';
-
-          const paymentMethodLabel = await resolvePaymentMethodLabel(sub);
-
-          const updatePayload = {
-            stripeSubscriptionId: sub.id,
-            subscriptionStatus: sub.status ?? 'incomplete',
-            'subscription.status': normalizedStatus,
-            'subscription.paymentMethod': paymentMethodLabel || (isDeletion ? null : admin.firestore.FieldValue.delete()),
-            'subscription.startDate': periodStart,
-            'subscription.endDate': periodEnd,
-            'subscription.graceEndsAt': cancelAt,
-            'subscription.updatedAt': admin.firestore.FieldValue.serverTimestamp(),
-            updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-            entitlements: { library: normalizedStatus === 'active' },
-          };
-
-          await ref.set(updatePayload, { merge: true });
+        if (userContext?.ref) {
+          await applyStripeSubscriptionToUser({
+            userRef: userContext.ref,
+            uid: userContext.uid,
+            subscription: sub,
+            customerId,
+            overrideStatus: event.type === 'customer.subscription.deleted' ? 'expired' : null,
+            ensureEmail: userContext.email || normalizeEmail(sub.customer_email),
+          });
+        } else {
+          console.warn(
+            'No encontramos usuario para sincronizar la suscripción por webhook.',
+            customerId,
+            sub.customer_email,
+          );
         }
         break;
       }
@@ -256,20 +502,68 @@ exports.stripeWebhook = functions.https.onRequest(async (req, res) => {
       case 'invoice.payment_failed': {
         const invoice = event.data.object;
         const customerId = invoice.customer;
+        const customerEmail = invoice.customer_email
+          || invoice.customer_email_address
+          || invoice.customer_email_address_legacy;
 
-        const q = await db.collection('users')
-          .where('stripeCustomerId', '==', customerId)
-          .limit(1).get();
+        const userContext = await resolveUserRefFromStripeContext({
+          customerId,
+          email: customerEmail,
+        });
 
-        if (!q.empty) {
-          const ref = db.collection('users').doc(q.docs[0].id);
-          await ref.set({
+        if (userContext?.ref) {
+          await userContext.ref.set({
             subscriptionStatus: 'past_due',
             'subscription.status': 'pending',
             'subscription.updatedAt': admin.firestore.FieldValue.serverTimestamp(),
             updatedAt: admin.firestore.FieldValue.serverTimestamp(),
             entitlements: { library: false },
+            ...(userContext.email ? { email: userContext.email } : {}),
           }, { merge: true });
+        } else {
+          console.warn('No se pudo ubicar usuario para invoice fallido', customerId);
+        }
+        break;
+      }
+
+      case 'checkout.session.completed': {
+        const session = event.data.object;
+        if (session.mode !== 'subscription' || !session.subscription) {
+          break;
+        }
+
+        const customerId = session.customer || session.customer_details?.customer;
+        const email = session.customer_details?.email || session.customer_email;
+
+        const userContext = await resolveUserRefFromStripeContext({
+          customerId,
+          email,
+        });
+
+        if (!userContext?.ref) {
+          console.warn('No se pudo ubicar usuario para checkout.session.completed');
+          break;
+        }
+
+        const stripe = getStripe();
+        let subscription;
+        try {
+          subscription = await stripe.subscriptions.retrieve(session.subscription, {
+            expand: ['default_payment_method', 'latest_invoice.payment_intent'],
+          });
+        } catch (err) {
+          console.error('No se pudo obtener la suscripción del checkout completado:', err.message);
+        }
+
+        if (subscription) {
+          await applyStripeSubscriptionToUser({
+            userRef: userContext.ref,
+            uid: userContext.uid,
+            subscription,
+            customerId,
+            overrideStatus: null,
+            ensureEmail: userContext.email || normalizeEmail(email),
+          });
         }
         break;
       }
@@ -491,15 +785,6 @@ exports.confirmCheckoutSession = functions.https.onCall(async (data, context) =>
     throw new functions.https.HttpsError('invalid-argument', 'sessionId requerido');
   }
 
-  const userRef = db.collection('users').doc(uid);
-  const snap = await userRef.get();
-  const userData = snap.exists ? snap.data() : {};
-  const stripeCustomerId = userData?.stripeCustomerId;
-
-  if (!stripeCustomerId) {
-    throw new functions.https.HttpsError('failed-precondition', 'Customer inexistente');
-  }
-
   const stripe = getStripe();
   let session;
   try {
@@ -513,10 +798,6 @@ exports.confirmCheckoutSession = functions.https.onCall(async (data, context) =>
 
   if (!session) {
     throw new functions.https.HttpsError('not-found', 'No se encontró la sesión de pago');
-  }
-
-  if (session.customer && session.customer !== stripeCustomerId) {
-    throw new functions.https.HttpsError('permission-denied', 'La sesión pertenece a otro cliente');
   }
 
   if (session.status === 'expired') {
@@ -537,43 +818,38 @@ exports.confirmCheckoutSession = functions.https.onCall(async (data, context) =>
   }
 
   const subscriptionId = typeof subscription === 'string' ? subscription : subscription.id;
-  subscription = await stripe.subscriptions.retrieve(subscriptionId, {
-    expand: [
-      'default_payment_method',
-      'latest_invoice.payment_intent.payment_method',
-      'pending_setup_intent.payment_method',
-    ],
+  if (typeof subscription === 'string' || !subscription.latest_invoice) {
+    subscription = await stripe.subscriptions.retrieve(subscriptionId, {
+      expand: [
+        'default_payment_method',
+        'latest_invoice.payment_intent.payment_method',
+        'pending_setup_intent.payment_method',
+      ],
+    });
+  }
+
+  const emailFromSession = normalizeEmail(
+    session.customer_details?.email
+      || session.customer_email
+      || subscription.customer_email
+      || subscription.customer_details?.email,
+  );
+
+  const userRef = db.collection('users').doc(uid);
+  if (emailFromSession) {
+    await userRef.set({ email: emailFromSession }, { merge: true });
+  }
+
+  const syncResult = await applyStripeSubscriptionToUser({
+    userRef,
+    uid,
+    subscription,
+    customerId: session.customer || subscription.customer,
+    overrideStatus: null,
+    ensureEmail: emailFromSession,
   });
 
-  const periodStart = subscription.current_period_start
-    ? new admin.firestore.Timestamp(subscription.current_period_start, 0)
-    : null;
-  const periodEnd = subscription.current_period_end
-    ? new admin.firestore.Timestamp(subscription.current_period_end, 0)
-    : null;
-  const cancelAtSeconds = subscription.cancel_at
-    || (subscription.cancel_at_period_end ? subscription.current_period_end : null);
-  const cancelAt = cancelAtSeconds
-    ? new admin.firestore.Timestamp(cancelAtSeconds, 0)
-    : null;
-
-  const normalizedStatus = normalizeStripeStatus(subscription.status);
-  const paymentMethodLabel = await resolvePaymentMethodLabel(subscription);
-
-  await userRef.set({
-    stripeSubscriptionId: subscription.id,
-    subscriptionStatus: subscription.status ?? 'incomplete',
-    'subscription.status': normalizedStatus,
-    'subscription.paymentMethod': paymentMethodLabel || null,
-    'subscription.startDate': periodStart,
-    'subscription.endDate': periodEnd,
-    'subscription.graceEndsAt': cancelAt,
-    'subscription.updatedAt': admin.firestore.FieldValue.serverTimestamp(),
-    updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-    entitlements: { library: normalizedStatus === 'active' },
-  }, { merge: true });
-
-  const resultStatus = normalizedStatus === 'active' ? 'active' : normalizedStatus;
+  const resultStatus = syncResult.status || normalizeStripeStatus(subscription.status);
   let resultMessage = 'Pago confirmado y acceso actualizado.';
   if (resultStatus !== 'active') {
     resultMessage = `Stripe registró la suscripción en estado "${resultStatus}". Se actualizará en cuanto quede activa.`;
@@ -611,32 +887,66 @@ exports.activateSubscriptionAccess = functions.https.onCall(async (data, context
   const statusRaw = typeof data?.status === 'string' ? data.status.trim().toLowerCase() : '';
   const allowedOverrides = new Set(['active', 'manual_active', 'pending', 'grace']);
   const requestedStatus = allowedOverrides.has(statusRaw) ? statusRaw : null;
-
-  const now = admin.firestore.Timestamp.now();
-  const endDate = admin.firestore.Timestamp.fromDate(new Date(
-    now.toDate().getTime() + durationDays * 24 * 60 * 60 * 1000,
-  ));
-
-  const finalStatus = requestedStatus || 'active';
-  const accessGranted = finalStatus === 'active' || finalStatus === 'manual_active' || finalStatus === 'grace';
-
   const userRef = db.collection('users').doc(uid);
-  await userRef.set({
-    subscriptionStatus: finalStatus,
-    'subscription.status': finalStatus,
-    'subscription.paymentMethod': paymentMethod,
-    'subscription.startDate': now,
-    'subscription.endDate': endDate,
-    'subscription.graceEndsAt': admin.firestore.FieldValue.delete(),
-    'subscription.updatedAt': admin.firestore.FieldValue.serverTimestamp(),
-    updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-    entitlements: { library: accessGranted },
-  }, { merge: true });
+  let email = null;
+  try {
+    const authUser = await admin.auth().getUser(uid);
+    email = normalizeEmail(authUser?.email);
+  } catch (err) {
+    console.error('No se pudo obtener el usuario de Auth en activateSubscriptionAccess:', err.message);
+  }
+
+  if (!email) {
+    throw new functions.https.HttpsError(
+      'failed-precondition',
+      'Tu cuenta no tiene un correo electrónico verificado. Actualiza tu perfil y vuelve a intentarlo.',
+    );
+  }
+
+  await userRef.set({ email }, { merge: true });
+
+  const cfg = functions.config();
+  const priceId = data?.priceId || process.env.STRIPE_PRICE_ID || cfg?.stripe?.price_id || null;
+
+  const match = await findActiveSubscriptionForEmail(email, priceId);
+
+  if (match?.subscription) {
+    const sync = await applyStripeSubscriptionToUser({
+      userRef,
+      uid,
+      subscription: match.subscription,
+      customerId: match.customer?.id,
+      overrideStatus: requestedStatus || null,
+      ensureEmail: email,
+    });
+
+    const finalStatus = sync.status;
+    let message = 'Confirmamos tu pago con Stripe y actualizamos tu acceso.';
+    if (!shouldGrantAccess(finalStatus)) {
+      message = `Stripe registró la suscripción en estado "${finalStatus}". Te notificaremos cuando quede activa.`;
+    }
+
+    return {
+      status: finalStatus,
+      message,
+      subscriptionId: match.subscription.id,
+      expiresAt: sync.endDate,
+    };
+  }
+
+  const manual = await applyManualSubscription({
+    userRef,
+    customerId: null,
+    paymentMethod,
+    durationDays,
+    status: requestedStatus || 'manual_active',
+    ensureEmail: email,
+  });
 
   return {
-    status: finalStatus,
-    message: `Activamos tu suscripción por ${durationDays} días.`,
-    expiresAt: endDate.toDate().toISOString(),
+    status: manual.status,
+    message: `Activamos tu suscripción por ${durationDays} días mientras confirmamos tu pago con Stripe.`,
+    expiresAt: manual.endDate,
   };
 });
 
