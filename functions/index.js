@@ -586,6 +586,53 @@ exports.confirmCheckoutSession = functions.https.onCall(async (data, context) =>
   };
 });
 
+// 3d) Activar acceso manualmente tras volver del Checkout hospedado
+exports.activateSubscriptionAccess = functions.https.onCall(async (data, context) => {
+  const uid = await assertAuth(context, data);
+
+  const rawDuration = data?.durationDays;
+  let durationDays = 30;
+  if (typeof rawDuration === 'number' && Number.isFinite(rawDuration)) {
+    durationDays = rawDuration;
+  } else if (typeof rawDuration === 'string') {
+    const parsed = parseInt(rawDuration, 10);
+    if (!Number.isNaN(parsed)) {
+      durationDays = parsed;
+    }
+  }
+
+  durationDays = Math.max(1, Math.min(365, Math.round(durationDays)));
+
+  const paymentMethodRaw = typeof data?.paymentMethod === 'string'
+    ? data.paymentMethod.trim()
+    : '';
+  const paymentMethod = paymentMethodRaw || 'Stripe Checkout';
+
+  const now = admin.firestore.Timestamp.now();
+  const endDate = admin.firestore.Timestamp.fromDate(new Date(
+    now.toDate().getTime() + durationDays * 24 * 60 * 60 * 1000,
+  ));
+
+  const userRef = db.collection('users').doc(uid);
+  await userRef.set({
+    subscriptionStatus: 'active',
+    'subscription.status': 'active',
+    'subscription.paymentMethod': paymentMethod,
+    'subscription.startDate': now,
+    'subscription.endDate': endDate,
+    'subscription.graceEndsAt': admin.firestore.FieldValue.delete(),
+    'subscription.updatedAt': admin.firestore.FieldValue.serverTimestamp(),
+    updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    entitlements: { library: true },
+  }, { merge: true });
+
+  return {
+    status: 'active',
+    message: `Activamos tu suscripción por ${durationDays} días.`,
+    expiresAt: endDate.toDate().toISOString(),
+  };
+});
+
 // 4) Portal del cliente (opcional)
 exports.createPortalSession = functions.https.onCall(async (data, context) => {
   const uid = await assertAuth(context, data);

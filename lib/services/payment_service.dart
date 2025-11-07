@@ -1,20 +1,7 @@
-import 'dart:io' show Platform;
-
 import 'package:cloud_functions/cloud_functions.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:flutter/foundation.dart';
-
-/// Result of creating a hosted checkout session in Stripe.
-class SubscriptionCheckoutSession {
-  const SubscriptionCheckoutSession({
-    required this.sessionId,
-    required this.url,
-  });
-
-  final String sessionId;
-  final Uri url;
-}
 
 /// Confirmation payload returned after Stripe validates a session.
 class SubscriptionCheckoutConfirmation {
@@ -49,53 +36,18 @@ class SubscriptionPaymentService {
 
   final FirebaseFunctions _functions;
 
-  /// Requests the backend to create a hosted checkout session in Stripe.
-  Future<SubscriptionCheckoutSession> createHostedCheckout({
-    String? priceId,
-    Map<String, dynamic>? metadata,
-    String? successUrl,
-    String? cancelUrl,
+  /// Activates the subscription in Firestore after the hosted checkout flow finishes.
+  Future<SubscriptionCheckoutConfirmation> activateHostedCheckout({
+    int durationDays = 30,
+    String? paymentMethod,
   }) async {
     final res = await _call(
-      'createCheckoutSession',
+      'activateSubscriptionAccess',
       data: <String, dynamic>{
-        if (priceId != null) 'priceId': priceId,
-        if (metadata != null) 'metadata': metadata,
-        if (successUrl != null) 'successUrl': successUrl,
-        if (cancelUrl != null) 'cancelUrl': cancelUrl,
-        if (!kIsWeb && Platform.isAndroid)
-          'client': 'android',
-        if (!kIsWeb && Platform.isIOS)
-          'client': 'ios',
+        'durationDays': durationDays,
+        if (paymentMethod != null) 'paymentMethod': paymentMethod,
         if (kIsWeb) 'client': 'web',
       },
-    ) as Map?;
-
-    final String? sessionId = res?['sessionId'] as String?;
-    final String? urlStr = res?['url'] as String?;
-    if (sessionId == null || sessionId.isEmpty || urlStr == null || urlStr.isEmpty) {
-      throw StateError('No se pudo generar el enlace de pago de Stripe.');
-    }
-
-    final Uri? uri = Uri.tryParse(urlStr);
-    if (uri == null) {
-      throw StateError('Stripe devolvió una URL inválida.');
-    }
-
-    return SubscriptionCheckoutSession(sessionId: sessionId, url: uri);
-  }
-
-  /// Confirms the hosted checkout session and synchronises Firestore server-side.
-  Future<SubscriptionCheckoutConfirmation> confirmHostedCheckout(
-    String sessionId,
-  ) async {
-    if (sessionId.isEmpty) {
-      throw ArgumentError('sessionId requerido para confirmar el pago.');
-    }
-
-    final res = await _call(
-      'confirmCheckoutSession',
-      data: <String, dynamic>{'sessionId': sessionId},
     ) as Map?;
 
     final String status = (res?['status'] as String? ?? 'pending').toLowerCase();

@@ -36,7 +36,6 @@ class _SubscriptionRequiredScreenState
   bool _processingPayment = false;
   bool _waitingCheckoutResult = false;
   bool _sawCheckoutTransition = false;
-  String? _activeCheckoutSessionId;
   final _manualMethod = TextEditingController();
   final SubscriptionService _subscriptionService = SubscriptionService();
   final SubscriptionPaymentService _paymentService =
@@ -205,19 +204,6 @@ class _SubscriptionRequiredScreenState
       return;
     }
 
-    final sessionId = _activeCheckoutSessionId;
-    if (sessionId == null || sessionId.isEmpty) {
-      if (!mounted) return;
-      setState(() {
-        _waitingCheckoutResult = false;
-        _sawCheckoutTransition = false;
-      });
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('No encontramos la sesión de pago por confirmar.')),
-      );
-      return;
-    }
-
     if (!mounted) return;
     setState(() {
       _processingPayment = true;
@@ -225,11 +211,11 @@ class _SubscriptionRequiredScreenState
     });
 
     try {
-      final confirmation =
-          await _paymentService.confirmHostedCheckout(sessionId);
+      final confirmation = await _paymentService.activateHostedCheckout(
+        paymentMethod: 'Stripe Checkout',
+      );
 
       if (confirmation.isActive) {
-        _activeCheckoutSessionId = null;
         if (widget.onRefresh != null) {
           await widget.onRefresh!.call();
         }
@@ -251,7 +237,7 @@ class _SubscriptionRequiredScreenState
           SnackBar(
             content: Text(
               confirmation.message ??
-                  'Stripe sigue procesando el pago. Intentaremos nuevamente en unos segundos.',
+                  'Estamos finalizando tu pago. Intentaremos nuevamente en unos segundos.',
             ),
           ),
         );
@@ -262,7 +248,6 @@ class _SubscriptionRequiredScreenState
           }
         });
       } else {
-        _activeCheckoutSessionId = null;
         if (!mounted) return;
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
@@ -307,17 +292,25 @@ class _SubscriptionRequiredScreenState
       return;
     }
 
+    final checkoutUrl = SubscriptionConfig.stripeCheckoutUrl;
+    final uri = Uri.tryParse(checkoutUrl);
+    if (uri == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('El enlace de Stripe configurado es inválido.'),
+        ),
+      );
+      return;
+    }
+
     setState(() => _processingPayment = true);
     try {
-      final session = await _paymentService.createHostedCheckout();
-      _activeCheckoutSessionId = session.sessionId;
-
       final mode = kIsWeb
           ? LaunchMode.platformDefault
           : LaunchMode.externalApplication;
 
       final launched = await launchUrl(
-        session.url,
+        uri,
         mode: mode,
         webOnlyWindowName: kIsWeb ? '_self' : null,
       );
@@ -342,7 +335,6 @@ class _SubscriptionRequiredScreenState
       if (!mounted) return;
       setState(() {
         _waitingCheckoutResult = false;
-        _activeCheckoutSessionId = null;
       });
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('No pudimos procesar el pago: $e')),
