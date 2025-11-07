@@ -3,8 +3,11 @@ import 'dart:ui' as ui;
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_app_check/firebase_app_check.dart';
+import 'package:cloud_functions/cloud_functions.dart'; // 👈 para callable ping
+
 import 'firebase_options.dart';
 
 // Screens
@@ -18,7 +21,6 @@ import 'screens/user_profile_screen.dart';
 import 'screens/offline_screen.dart';
 import 'screens/offline_home_screen.dart';
 import 'services/connectivity_service.dart';
-import 'services/payment_service.dart';
 
 Future<void> main() async {
   await runZonedGuarded(() async {
@@ -31,6 +33,10 @@ Future<void> main() async {
       );
     }
 
+    // 👇 Log de diagnóstico: confirma a qué proyecto apunta el cliente
+    final o = Firebase.app().options;
+    debugPrint('[FIREBASE] projectId=${o.projectId} appId=${o.appId}');
+
     // 🔐 Activa App Check en desarrollo para silenciar los avisos del Storage.
     if (!kIsWeb) {
       if (kDebugMode || kProfileMode) {
@@ -40,14 +46,6 @@ Future<void> main() async {
         );
       } else {
         await FirebaseAppCheck.instance.activate();
-      }
-    }
-
-    try {
-      await SubscriptionPaymentService.instance.ensureInitialized();
-    } catch (e) {
-      if (kDebugMode) {
-        debugPrint('Stripe no configurado todavía: $e');
       }
     }
 
@@ -79,6 +77,9 @@ class MyApp extends StatelessWidget {
         '/video': (context) => const VideoScreen(),
         '/chat': (context) => const ChatScreen(),
         '/perfil': (context) => const UserProfileScreen(),
+
+        // 🧪 Ruta de diagnóstico para probar la callable `ping`
+        '/_ping': (context) => const DebugPingScreen(),
       },
     );
   }
@@ -256,6 +257,83 @@ class _RecoveryScreen extends StatelessWidget {
                 (context as Element).reassemble(); // reintento rápido
               },
               child: const Text('Reintentar'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// ====== 🧪 Pantalla de diagnóstico para probar la callable `ping` ======
+/// Navega manualmente a '/_ping' (solo queda registrada la ruta; no hay botón visible)
+class DebugPingScreen extends StatefulWidget {
+  const DebugPingScreen({super.key});
+
+  @override
+  State<DebugPingScreen> createState() => _DebugPingScreenState();
+}
+
+class _DebugPingScreenState extends State<DebugPingScreen> {
+  String _result = 'Presiona "Probar ping"';
+
+  Future<void> _runPing() async {
+    setState(() => _result = 'Llamando…');
+    try {
+      final functions = FirebaseFunctions.instanceFor(
+        app: Firebase.app(), // 👈 MISMO app
+        region: 'us-central1',
+      );
+      final res = await functions.httpsCallable('ping').call();
+      setState(() => _result = 'OK: ${res.data}');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('PING => ${res.data}')),
+        );
+      }
+    } on FirebaseFunctionsException catch (e) {
+      setState(() => _result = 'Error: ${e.code}: ${e.message}');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Error: ${e.code}: ${e.message}')),
+        );
+      }
+    } catch (e) {
+      setState(() => _result = 'Error: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Error: $e')),
+        );
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final o = Firebase.app().options;
+    return Scaffold(
+      appBar: AppBar(title: const Text('Debug Ping')),
+      body: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('Proyecto: ${o.projectId}\nAppId: ${o.appId}'),
+            const SizedBox(height: 12),
+            FilledButton.icon(
+              onPressed: _runPing,
+              icon: const Icon(Icons.cloud),
+              label: const Text('Probar ping'),
+            ),
+            const SizedBox(height: 12),
+            Text(
+              _result,
+              style: const TextStyle(fontFamily: 'monospace'),
+            ),
+            const SizedBox(height: 8),
+            const Text(
+              'Esperado: { uid: "<tu uid>", appCheck: true/false }',
+              style: TextStyle(color: Colors.grey),
             ),
           ],
         ),

@@ -1,0 +1,8 @@
+{
+  "projects": {
+    "app": "capfiscal-biblioteca-app",
+    "zapp": "capfiscal-biblioteca-app"
+  },
+  "targets": {},
+  "etags": {}
+}

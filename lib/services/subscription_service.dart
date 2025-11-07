@@ -85,8 +85,13 @@ class SubscriptionStatus {
   }
 
   /// Whether some subscription data exists on the user profile.
+  /// (Evita marcar `expired` solo porque haya claves vacías en el mapa.)
   bool get hasData =>
-      startDate != null || endDate != null || paymentMethod != null || raw.isNotEmpty;
+      startDate != null ||
+      endDate != null ||
+      graceEndsAt != null ||
+      paymentMethod != null ||
+      statusOverride != null;
 
   /// Normalised override in lowercase.
   String? get _statusLower => statusOverride?.trim().toLowerCase();
@@ -142,8 +147,10 @@ class SubscriptionStatus {
       endDate != null && endDate!.isAfter(DateTime.now().toUtc());
 
   /// Whether the user is still in a configured grace period.
-  bool get isInGrace => !isActive &&
-      graceEndsAt != null && graceEndsAt!.isAfter(DateTime.now().toUtc());
+  bool get isInGrace =>
+      !isActive &&
+      graceEndsAt != null &&
+      graceEndsAt!.isAfter(DateTime.now().toUtc());
 
   /// Friendly helper to render debug information.
   Map<String, Object?> toDebugMap() => <String, Object?>{
@@ -205,7 +212,7 @@ class SubscriptionService {
     return SubscriptionStatus.fromSnapshot(snapshot);
   }
 
-  /// Updates subscription fields. Pass `null` values to clear data.
+  /// Updates subscription fields. Pass `null` values to CLEAR fields (delete).
   Future<void> updateSubscription(
     String uid, {
     DateTime? startDate,
@@ -215,31 +222,44 @@ class SubscriptionService {
     String? status,
   }) async {
     final updates = <String, Object?>{};
+
     if (startDate != null) {
       updates['subscription.startDate'] = Timestamp.fromDate(startDate.toUtc());
     } else {
-      updates['subscription.startDate'] = null;
+      updates['subscription.startDate'] = FieldValue.delete();
     }
+
     if (endDate != null) {
       updates['subscription.endDate'] = Timestamp.fromDate(endDate.toUtc());
     } else {
-      updates['subscription.endDate'] = null;
+      updates['subscription.endDate'] = FieldValue.delete();
     }
+
     if (graceEndsAt != null) {
       updates['subscription.graceEndsAt'] =
           Timestamp.fromDate(graceEndsAt.toUtc());
     } else {
-      updates['subscription.graceEndsAt'] = null;
+      updates['subscription.graceEndsAt'] = FieldValue.delete();
     }
-    updates['subscription.paymentMethod'] = paymentMethod;
+
+    if (paymentMethod != null) {
+      updates['subscription.paymentMethod'] = paymentMethod;
+    } else {
+      updates['subscription.paymentMethod'] = FieldValue.delete();
+    }
+
     if (status != null) {
       updates['subscription.status'] = status;
-      updates['status'] = status;
+      // Si aún necesitas un espejo en la raíz, descomenta:
+      // updates['status'] = status;
     } else {
-      updates['subscription.status'] = null;
+      updates['subscription.status'] = FieldValue.delete();
+      // updates['status'] = FieldValue.delete();
     }
+
     updates['subscription.updatedAt'] = FieldValue.serverTimestamp();
     updates['updatedAt'] = FieldValue.serverTimestamp();
+
     await _userDoc(uid).set(updates, SetOptions(merge: true));
   }
 

@@ -1,14 +1,16 @@
+// lib/services/payment_service.dart
 import 'dart:io' show Platform;
 
 import 'package:cloud_functions/cloud_functions.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:firebase_core/firebase_core.dart'; // 👈 necesario para Firebase.app()
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_stripe/flutter_stripe.dart';
 
 import '../config/subscription_config.dart';
 
-/// Result of a subscription checkout flow.
+/// Resultado del flujo de checkout de suscripción.
 class SubscriptionPaymentResult {
   const SubscriptionPaymentResult._(this.status, {this.subscriptionId});
 
@@ -25,14 +27,15 @@ class SubscriptionPaymentResult {
       const SubscriptionPaymentResult._(SubscriptionPaymentStatus.canceled);
 }
 
-/// Possible final states after requesting payment from the user.
+/// Posibles estados finales tras pedir el pago.
 enum SubscriptionPaymentStatus { completed, canceled }
 
-/// Thin client around Stripe Payment Sheet driven by Cloud Functions.
+/// Capa fina alrededor de Stripe Payment Sheet impulsada por Cloud Functions.
 class SubscriptionPaymentService {
   SubscriptionPaymentService._({FirebaseFunctions? functions})
       : _functions = functions ??
             FirebaseFunctions.instanceFor(
+              app: Firebase.app(), // 👈 fuerza el MISMO app inicializado
               region: const String.fromEnvironment(
                 'FUNCTIONS_REGION',
                 defaultValue: 'us-central1',
@@ -45,9 +48,10 @@ class SubscriptionPaymentService {
   final FirebaseFunctions _functions;
   bool _stripeReady = false;
 
-  /// Ensures the Stripe SDK has been configured with the publishable key.
+  /// Configura la SDK de Stripe con la publishable key.
   Future<void> ensureInitialized() async {
     if (_stripeReady) return;
+
     if (!SubscriptionConfig.hasStripeConfiguration) {
       throw StateError(
         'Configura STRIPE_PUBLISHABLE_KEY y STRIPE_PRICE_ID con --dart-define.',
@@ -79,54 +83,35 @@ class SubscriptionPaymentService {
   }) async {
     await ensureInitialized();
 
-    final user = FirebaseAuth.instance.currentUser;
-    if (user == null || user.uid != uid) {
-      throw StateError('Debes iniciar sesión nuevamente para continuar con el pago.');
-    }
-
-    try {
-      await user.getIdToken(true);
-    } catch (error) {
-      throw StateError(
-        'No pudimos validar tu sesión con Firebase. Intenta iniciar sesión de nuevo.',
-      );
-    }
-
+    // --- Todos los callables pasan por _call(), que garantiza auth fresh ---
     // 1) Customer
-    final HttpsCallableResult<dynamic> cust =
-        await _functions.httpsCallable('createStripeCustomer').call();
-    final String? customerId = (cust.data as Map)['customerId'] as String?;
-
+    final cust = await _call('createStripeCustomer') as Map?;
+    final String? customerId = cust?['customerId'] as String?;
     if (customerId == null || customerId.isEmpty) {
       throw StateError('No se pudo crear/obtener el Customer en Stripe.');
     }
 
-    // 2) Ephemeral key (usa la versión de API del backend)
-    final Map<String, dynamic> ekeyParams = <String, dynamic>{
-      'api_version': '2024-06-20', // <-- fija para tu versión del backend
-    };
-    final HttpsCallableResult<dynamic> ekeyRes =
-        await _functions.httpsCallable('createEphemeralKey').call(ekeyParams);
-
-    final String? ephemeralKey = (ekeyRes.data as Map)['secret'] as String?;
-
+    // 2) Ephemeral key
+    final ekeyRes = await _call(
+      'createEphemeralKey',
+      data: const {'api_version': '2024-06-20'},
+    ) as Map?;
+    final String? ephemeralKey = ekeyRes?['secret'] as String?;
     if (ephemeralKey == null || ephemeralKey.isEmpty) {
       throw StateError('No se pudo generar el Ephemeral Key.');
     }
 
-    // 3) Crear suscripción (regresa clientSecret del PaymentIntent)
-    final HttpsCallableResult<dynamic> sub = await _functions
-        .httpsCallable('createSubscription')
-        .call(<String, dynamic>{
-      if (priceId != null) 'priceId': priceId,
-      if (metadata != null) 'metadata': metadata,
-    });
+    // 3) Crear suscripción: regresa clientSecret del PaymentIntent
+    final sub = await _call(
+      'createSubscription',
+      data: <String, dynamic>{
+        if (priceId != null) 'priceId': priceId,
+        if (metadata != null) 'metadata': metadata,
+      },
+    ) as Map?;
 
-    final Map<String, dynamic> subData =
-        (sub.data as Map).cast<String, dynamic>();
-    final String? clientSecret = subData['clientSecret'] as String?;
-    final String? subscriptionId = subData['subscriptionId'] as String?;
-
+    final String? clientSecret = sub?['clientSecret'] as String?;
+    final String? subscriptionId = sub?['subscriptionId'] as String?;
     if (clientSecret == null || subscriptionId == null) {
       throw StateError(
         'La función createSubscription no devolvió clientSecret/subscriptionId.',
@@ -159,18 +144,66 @@ class SubscriptionPaymentService {
     }
 
     // El webhook actualizará Firestore cuando Stripe confirme la suscripción.
-    return SubscriptionPaymentResult.completed(subscriptionId!);
+    return SubscriptionPaymentResult.completed(subscriptionId);
   }
 
   /// (Opcional) portal de facturación
   Future<void> openBillingPortal() async {
-    final HttpsCallableResult<dynamic> res =
-        await _functions.httpsCallable('createPortalSession').call();
-    final String? url = (res.data as Map)['url'] as String?;
+    final res = await _call('createPortalSession') as Map?;
+    final String? url = res?['url'] as String?;
     if (url == null || url.isEmpty) {
       throw StateError('No se pudo generar URL del portal de facturación.');
     }
     // Usa url_launcher para abrir:
     // await launchUrl(Uri.parse(url), mode: LaunchMode.externalApplication);
+  }
+
+  // ======================================================================
+  // Helper centralizado: GARANTIZA usuario listo + ID token fresco + reintento
+  // ======================================================================
+  Future<dynamic> _call(String name, {Map<String, dynamic>? data}) async {
+    final auth = FirebaseAuth.instance;
+
+    // 1) Espera a que Firebase restituya la sesión si aún no está lista.
+    User? user = auth.currentUser;
+    if (user == null) {
+      try {
+        user = await auth
+            .authStateChanges()
+            .firstWhere((u) => u != null)
+            .timeout(const Duration(seconds: 8));
+      } catch (_) {
+        // seguirá nulo y caerá en el throw de abajo
+      }
+    }
+    if (user == null) {
+      throw FirebaseException(
+        plugin: 'cloud_functions',
+        code: 'unauthenticated',
+        message: 'Inicia sesión para continuar',
+      );
+    }
+
+    // 2) Refresca ID token.
+    await user.getIdToken(true);
+
+    // 3) Llamada con posible reintento si el backend responde unauthenticated.
+    final callable = _functions.httpsCallable(
+      name,
+      options: HttpsCallableOptions(timeout: const Duration(seconds: 60)),
+    );
+
+    try {
+      final res = await callable.call(data ?? const <String, dynamic>{});
+      return res.data;
+    } on FirebaseFunctionsException catch (e) {
+      if (e.code == 'unauthenticated') {
+        // Fuerza refresh y reintenta 1 vez por si el token expiró en tránsito
+        await user.getIdToken(true);
+        final res = await callable.call(data ?? const <String, dynamic>{});
+        return res.data;
+      }
+      rethrow;
+    }
   }
 }

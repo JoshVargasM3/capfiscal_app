@@ -388,3 +388,9 @@ exports.createPortalSession = functions.https.onCall(async (data, context) => {
   });
   return { url: session.url };
 });
+
+exports.ping = functions.https.onCall(async (data, context) => {
+  console.log('PING auth?', !!context.auth, 'uid', context.auth?.uid, 'app?', !!context.app);
+  return { uid: context.auth?.uid ?? null, appCheck: !!context.app };
+});
+
