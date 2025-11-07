@@ -21,25 +21,19 @@ class SubscriptionConfig {
       String.fromEnvironment('SUBSCRIPTION_MERCHANT_NAME',
           defaultValue: 'CAPFISCAL');
 
-  /// URL where Stripe redirects the user after a successful payment.
-  static const String stripeCheckoutSuccessUrl =
-      String.fromEnvironment('STRIPE_CHECKOUT_SUCCESS_URL');
-
-  /// URL where Stripe redirects the user after cancelling the payment.
-  static const String stripeCheckoutCancelUrl =
-      String.fromEnvironment('STRIPE_CHECKOUT_CANCEL_URL');
+  /// Hosted Checkout URL used to charge the subscription via Stripe.
+  static const String stripeCheckoutUrl = String.fromEnvironment(
+    'STRIPE_CHECKOUT_URL',
+    defaultValue: 'https://buy.stripe.com/test_9B6cN425Hgck9Zm7n94Vy00',
+  );
 
   /// Whether the Stripe keys appear to be configured.
   static bool get hasStripeConfiguration =>
       stripePublishableKey.isNotEmpty && stripePriceId.isNotEmpty;
 
-  /// Whether the checkout return URLs are configured.
-  static bool get hasCheckoutReturnUrls =>
-      stripeCheckoutSuccessUrl.isNotEmpty && stripeCheckoutCancelUrl.isNotEmpty;
-
-  /// Whether the new Checkout flow has all the required configuration.
+  /// Whether the hosted checkout link is ready to be used.
   static bool get hasCheckoutConfiguration =>
-      stripePriceId.isNotEmpty && hasCheckoutReturnUrls;
+      stripeCheckoutUrl.isNotEmpty;
 
   /// Helper log to keep noisy prints behind debug mode.
   static void debugLog(String message) {

@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
@@ -27,11 +29,13 @@ class SubscriptionRequiredScreen extends StatefulWidget {
 }
 
 class _SubscriptionRequiredScreenState
-    extends State<SubscriptionRequiredScreen> {
+    extends State<SubscriptionRequiredScreen> with WidgetsBindingObserver {
   bool _refreshing = false;
   bool _openingContact = false;
   bool _activatingManually = false;
   bool _processingPayment = false;
+  bool _waitingCheckoutResult = false;
+  bool _sawCheckoutTransition = false;
   final _manualMethod = TextEditingController();
   final SubscriptionService _subscriptionService = SubscriptionService();
   final SubscriptionPaymentService _paymentService =
@@ -44,9 +48,28 @@ class _SubscriptionRequiredScreenState
   static const _gold = Color(0xFFE1B85C);
 
   @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+  }
+
+  @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _manualMethod.dispose();
     super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (!_waitingCheckoutResult) return;
+
+    if (state == AppLifecycleState.paused || state == AppLifecycleState.inactive) {
+      _sawCheckoutTransition = true;
+    } else if (state == AppLifecycleState.resumed && _sawCheckoutTransition) {
+      _sawCheckoutTransition = false;
+      unawaited(_completeHostedCheckout());
+    }
   }
 
   Future<void> _handleRefresh() async {
@@ -165,8 +188,63 @@ class _SubscriptionRequiredScreenState
     }
   }
 
-  Future<void> _startPayment() async {
+  Future<void> _completeHostedCheckout() async {
     if (_processingPayment) return;
+
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null) {
+      if (!mounted) return;
+      setState(() {
+        _waitingCheckoutResult = false;
+        _sawCheckoutTransition = false;
+      });
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Inicia sesión para confirmar tu pago.')),
+      );
+      return;
+    }
+
+    if (!mounted) return;
+    setState(() {
+      _processingPayment = true;
+      _waitingCheckoutResult = false;
+    });
+
+    try {
+      final now = DateTime.now().toUtc();
+      await _subscriptionService.updateSubscription(
+        user.uid,
+        startDate: now,
+        endDate: now.add(const Duration(days: 30)),
+        paymentMethod: 'Stripe Checkout',
+        status: 'active',
+      );
+      if (widget.onRefresh != null) {
+        await widget.onRefresh!.call();
+      }
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Pago confirmado. Activamos tu acceso por 30 días.'),
+        ),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('No pudimos actualizar tu suscripción: $e')),
+      );
+    } finally {
+      if (mounted) {
+        setState(() {
+          _processingPayment = false;
+          _sawCheckoutTransition = false;
+        });
+      }
+    }
+  }
+
+  Future<void> _startPayment() async {
+    if (_processingPayment || _waitingCheckoutResult) return;
     final user = FirebaseAuth.instance.currentUser;
     if (user == null) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -178,7 +256,7 @@ class _SubscriptionRequiredScreenState
     if (!SubscriptionConfig.hasCheckoutConfiguration) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
-          content: Text('Configura las URLs de retorno de Stripe.'),
+          content: Text('Configura el enlace de pago de Stripe.'),
         ),
       );
       return;
@@ -186,74 +264,24 @@ class _SubscriptionRequiredScreenState
 
     setState(() => _processingPayment = true);
     try {
-      final session = await _paymentService.createCheckoutSession(
-        priceId: SubscriptionConfig.stripePriceId.isNotEmpty
-            ? SubscriptionConfig.stripePriceId
-            : null,
-        successUrl: SubscriptionConfig.stripeCheckoutSuccessUrl,
-        cancelUrl: SubscriptionConfig.stripeCheckoutCancelUrl,
-      );
-
-      if (!mounted) return;
-      final launchMode = kIsWeb
-          ? LaunchMode.platformDefault
-          : LaunchMode.inAppBrowserView;
-      final launched = await launchUrl(
-        Uri.parse(session.checkoutUrl),
-        mode: launchMode,
-        webOnlyWindowName: kIsWeb ? '_self' : null,
-      );
+      final launched = await _paymentService.openHostedCheckout();
 
       if (!launched) {
         throw StateError('No se pudo abrir la página de pago de Stripe.');
       }
 
       if (!mounted) return;
+      setState(() {
+        _waitingCheckoutResult = true;
+        _sawCheckoutTransition = false;
+      });
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
-          content: Text('Validando tu pago con Stripe…'),
+          content: Text(
+            'Cuando completes el pago regresa a la app, activaremos tu acceso automáticamente.',
+          ),
         ),
       );
-
-      final result = await _paymentService.confirmCheckoutSession(
-        sessionId: session.sessionId,
-      );
-
-      if (!mounted) return;
-      switch (result.status) {
-        case SubscriptionPaymentStatus.activated:
-          if (widget.onRefresh != null) {
-            await widget.onRefresh!.call();
-          }
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text(
-                result.message ??
-                    'Pago confirmado. Activamos tu acceso por 30 días.',
-              ),
-            ),
-          );
-          break;
-        case SubscriptionPaymentStatus.canceled:
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text(
-                result.message ?? 'Pago cancelado o no completado.',
-              ),
-            ),
-          );
-          break;
-        case SubscriptionPaymentStatus.pending:
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text(
-                result.message ??
-                    'Estamos confirmando el pago, intenta actualizar en unos segundos.',
-              ),
-            ),
-          );
-          break;
-      }
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
@@ -431,7 +459,9 @@ class _SubscriptionRequiredScreenState
                                 height: 46,
                                 child: ElevatedButton.icon(
                                   onPressed:
-                                      _processingPayment ? null : _startPayment,
+                                      (_processingPayment || _waitingCheckoutResult)
+                                          ? null
+                                          : _startPayment,
                                   icon: _processingPayment
                                       ? const SizedBox(
                                           width: 18,
@@ -443,11 +473,15 @@ class _SubscriptionRequiredScreenState
                                                     Colors.black),
                                           ),
                                         )
-                                      : const Icon(Icons.credit_card),
+                                      : _waitingCheckoutResult
+                                          ? const Icon(Icons.hourglass_bottom)
+                                          : const Icon(Icons.credit_card),
                                   label: Text(
                                     _processingPayment
-                                        ? 'Procesando…'
-                                        : 'Pagar y activar',
+                                        ? 'Abriendo pago…'
+                                        : _waitingCheckoutResult
+                                            ? 'Esperando confirmación…'
+                                            : 'Pagar y activar',
                                     style: const TextStyle(
                                         fontWeight: FontWeight.w700),
                                   ),
@@ -469,7 +503,7 @@ class _SubscriptionRequiredScreenState
                                   border: Border.all(color: Colors.white12),
                                 ),
                                 child: const Text(
-                                  'Configura STRIPE_PRICE_ID, STRIPE_CHECKOUT_SUCCESS_URL y STRIPE_CHECKOUT_CANCEL_URL.',
+                                  'Configura STRIPE_CHECKOUT_URL para habilitar el botón de pago.',
                                   style: TextStyle(
                                     color: Color(0xFFBEBEC6),
                                     fontSize: 13,
