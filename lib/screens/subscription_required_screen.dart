@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:url_launcher/url_launcher.dart';
@@ -174,55 +175,81 @@ class _SubscriptionRequiredScreenState
       return;
     }
 
+    if (!SubscriptionConfig.hasCheckoutConfiguration) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Configura las URLs de retorno de Stripe.'),
+        ),
+      );
+      return;
+    }
+
     setState(() => _processingPayment = true);
     try {
-      final result = await _paymentService.startSubscriptionCheckout(
-        uid: user.uid,
-        email: user.email ?? '',
+      final session = await _paymentService.createCheckoutSession(
+        priceId: SubscriptionConfig.stripePriceId.isNotEmpty
+            ? SubscriptionConfig.stripePriceId
+            : null,
+        successUrl: SubscriptionConfig.stripeCheckoutSuccessUrl,
+        cancelUrl: SubscriptionConfig.stripeCheckoutCancelUrl,
+      );
+
+      if (!mounted) return;
+      final launchMode = kIsWeb
+          ? LaunchMode.platformDefault
+          : LaunchMode.inAppBrowserView;
+      final launched = await launchUrl(
+        Uri.parse(session.checkoutUrl),
+        mode: launchMode,
+        webOnlyWindowName: kIsWeb ? '_self' : null,
+      );
+
+      if (!launched) {
+        throw StateError('No se pudo abrir la página de pago de Stripe.');
+      }
+
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Validando tu pago con Stripe…'),
+        ),
+      );
+
+      final result = await _paymentService.confirmCheckoutSession(
+        sessionId: session.sessionId,
       );
 
       if (!mounted) return;
       switch (result.status) {
-        case SubscriptionPaymentStatus.completed:
-          bool updated = true;
-          try {
-            final now = DateTime.now().toUtc();
-            await _subscriptionService.updateSubscription(
-              user.uid,
-              startDate: now,
-              endDate: now.add(const Duration(days: 30)),
-              paymentMethod: 'Stripe',
-              status: 'active',
-            );
-          } catch (e) {
-            updated = false;
-            if (mounted) {
-              ScaffoldMessenger.of(context).showSnackBar(
-                SnackBar(
-                  content: Text(
-                    'Pago recibido pero no pudimos actualizar tu acceso: $e',
-                  ),
-                ),
-              );
-            }
-          }
+        case SubscriptionPaymentStatus.activated:
           if (widget.onRefresh != null) {
             await widget.onRefresh!.call();
           }
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(
               content: Text(
-                updated
-                    ? 'Pago confirmado. Activamos tu acceso por 30 días.'
-                    : 'Pago recibido. En cuanto confirmemos la suscripción se habilitará tu acceso.',
+                result.message ??
+                    'Pago confirmado. Activamos tu acceso por 30 días.',
               ),
             ),
           );
           break;
         case SubscriptionPaymentStatus.canceled:
           ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-              content: Text('Pago cancelado por el usuario.'),
+            SnackBar(
+              content: Text(
+                result.message ?? 'Pago cancelado o no completado.',
+              ),
+            ),
+          );
+          break;
+        case SubscriptionPaymentStatus.pending:
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text(
+                result.message ??
+                    'Estamos confirmando el pago, intenta actualizar en unos segundos.',
+              ),
             ),
           );
           break;
@@ -303,9 +330,9 @@ class _SubscriptionRequiredScreenState
     final showPaymentSection = status.state == SubscriptionState.none ||
         status.state == SubscriptionState.expired;
     final showPaymentButton =
-        showPaymentSection && SubscriptionConfig.hasStripeConfiguration;
+        showPaymentSection && SubscriptionConfig.hasCheckoutConfiguration;
     final showPaymentConfigHint =
-        showPaymentSection && !SubscriptionConfig.hasStripeConfiguration;
+        showPaymentSection && !SubscriptionConfig.hasCheckoutConfiguration;
 
     return Container(
       decoration: const BoxDecoration(
@@ -442,7 +469,7 @@ class _SubscriptionRequiredScreenState
                                   border: Border.all(color: Colors.white12),
                                 ),
                                 child: const Text(
-                                  'Configura las llaves de Stripe para habilitar el pago directo.',
+                                  'Configura STRIPE_PRICE_ID, STRIPE_CHECKOUT_SUCCESS_URL y STRIPE_CHECKOUT_CANCEL_URL.',
                                   style: TextStyle(
                                     color: Color(0xFFBEBEC6),
                                     fontSize: 13,

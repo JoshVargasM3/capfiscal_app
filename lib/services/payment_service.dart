@@ -1,41 +1,63 @@
 // lib/services/payment_service.dart
-import 'dart:io' show Platform;
-
 import 'package:cloud_functions/cloud_functions.dart';
 import 'package:firebase_auth/firebase_auth.dart';
-import 'package:firebase_core/firebase_core.dart'; // 👈 necesario para Firebase.app()
-import 'package:flutter/foundation.dart';
-import 'package:flutter/material.dart';
-import 'package:flutter_stripe/flutter_stripe.dart';
-
-import '../config/subscription_config.dart';
+import 'package:firebase_core/firebase_core.dart';
 
 /// Resultado del flujo de checkout de suscripción.
 class SubscriptionPaymentResult {
-  const SubscriptionPaymentResult._(this.status, {this.subscriptionId});
+  const SubscriptionPaymentResult._(
+    this.status, {
+    this.subscriptionId,
+    this.message,
+  });
 
   final SubscriptionPaymentStatus status;
   final String? subscriptionId;
+  final String? message;
 
-  factory SubscriptionPaymentResult.completed(String subscriptionId) =>
+  factory SubscriptionPaymentResult.activated({
+    required String subscriptionId,
+    String? message,
+  }) =>
       SubscriptionPaymentResult._(
-        SubscriptionPaymentStatus.completed,
+        SubscriptionPaymentStatus.activated,
         subscriptionId: subscriptionId,
+        message: message,
       );
 
-  factory SubscriptionPaymentResult.canceled() =>
-      const SubscriptionPaymentResult._(SubscriptionPaymentStatus.canceled);
+  factory SubscriptionPaymentResult.pending({String? message}) =>
+      SubscriptionPaymentResult._(
+        SubscriptionPaymentStatus.pending,
+        message: message,
+      );
+
+  factory SubscriptionPaymentResult.canceled({String? message}) =>
+      SubscriptionPaymentResult._(
+        SubscriptionPaymentStatus.canceled,
+        message: message,
+      );
 }
 
 /// Posibles estados finales tras pedir el pago.
-enum SubscriptionPaymentStatus { completed, canceled }
+enum SubscriptionPaymentStatus { activated, pending, canceled }
 
-/// Capa fina alrededor de Stripe Payment Sheet impulsada por Cloud Functions.
+/// Información del Checkout Session generado en Stripe.
+class StripeCheckoutSession {
+  const StripeCheckoutSession({
+    required this.sessionId,
+    required this.checkoutUrl,
+  });
+
+  final String sessionId;
+  final String checkoutUrl;
+}
+
+/// Capa fina alrededor de Stripe Checkout impulsada por Cloud Functions.
 class SubscriptionPaymentService {
   SubscriptionPaymentService._({FirebaseFunctions? functions})
       : _functions = functions ??
             FirebaseFunctions.instanceFor(
-              app: Firebase.app(), // 👈 fuerza el MISMO app inicializado
+              app: Firebase.app(),
               region: const String.fromEnvironment(
                 'FUNCTIONS_REGION',
                 defaultValue: 'us-central1',
@@ -46,105 +68,88 @@ class SubscriptionPaymentService {
       SubscriptionPaymentService._();
 
   final FirebaseFunctions _functions;
-  bool _stripeReady = false;
 
-  /// Configura la SDK de Stripe con la publishable key.
-  Future<void> ensureInitialized() async {
-    if (_stripeReady) return;
-
-    if (!SubscriptionConfig.hasStripeConfiguration) {
-      throw StateError(
-        'Configura STRIPE_PUBLISHABLE_KEY y STRIPE_PRICE_ID con --dart-define.',
-      );
-    }
-
-    Stripe.publishableKey = SubscriptionConfig.stripePublishableKey;
-
-    // iOS: merchant id para Apple Pay (no afecta PaymentSheet)
-    if (!kIsWeb && Platform.isIOS) {
-      Stripe.merchantIdentifier = const String.fromEnvironment(
-        'STRIPE_MERCHANT_ID',
-        defaultValue: 'merchant.com.capfiscal',
-      );
-    }
-
-    await Stripe.instance.applySettings();
-    _stripeReady = true;
-  }
-
-  /// 1) Customer  2) Ephemeral key  3) Subscription  4) PaymentSheet
-  Future<SubscriptionPaymentResult> startSubscriptionCheckout({
-    required String uid,
-    required String email,
+  /// Crea un Stripe Checkout Session y devuelve la URL para cobrar al usuario.
+  Future<StripeCheckoutSession> createCheckoutSession({
     String? priceId,
     Map<String, dynamic>? metadata,
-    bool allowDelayedPaymentMethods = false,
-    ThemeMode appearance = ThemeMode.system,
+    required String successUrl,
+    required String cancelUrl,
   }) async {
-    await ensureInitialized();
-
-    // --- Todos los callables pasan por _call(), que garantiza auth fresh ---
-    // 1) Customer
-    final cust = await _call('createStripeCustomer') as Map?;
-    final String? customerId = cust?['customerId'] as String?;
-    if (customerId == null || customerId.isEmpty) {
-      throw StateError('No se pudo crear/obtener el Customer en Stripe.');
-    }
-
-    // 2) Ephemeral key
-    final ekeyRes = await _call(
-      'createEphemeralKey',
-      data: const {'api_version': '2024-06-20'},
-    ) as Map?;
-    final String? ephemeralKey = ekeyRes?['secret'] as String?;
-    if (ephemeralKey == null || ephemeralKey.isEmpty) {
-      throw StateError('No se pudo generar el Ephemeral Key.');
-    }
-
-    // 3) Crear suscripción: regresa clientSecret del PaymentIntent
-    final sub = await _call(
-      'createSubscription',
+    final res = await _call(
+      'createCheckoutSession',
       data: <String, dynamic>{
+        'successUrl': successUrl,
+        'cancelUrl': cancelUrl,
         if (priceId != null) 'priceId': priceId,
         if (metadata != null) 'metadata': metadata,
       },
     ) as Map?;
 
-    final String? clientSecret = sub?['clientSecret'] as String?;
-    final String? subscriptionId = sub?['subscriptionId'] as String?;
-    if (clientSecret == null || subscriptionId == null) {
-      throw StateError(
-        'La función createSubscription no devolvió clientSecret/subscriptionId.',
-      );
+    final sessionId = res?['sessionId'] as String?;
+    final url = res?['url'] as String?;
+
+    if (sessionId == null || sessionId.isEmpty || url == null || url.isEmpty) {
+      throw StateError('No se pudo generar el enlace de cobro de Stripe.');
     }
 
-    // 4) Init PaymentSheet
-    await Stripe.instance.initPaymentSheet(
-      paymentSheetParameters: SetupPaymentSheetParameters(
-        style: appearance,
-        merchantDisplayName: SubscriptionConfig.merchantDisplayName,
-        customerId: customerId,
-        customerEphemeralKeySecret: ephemeralKey,
-        paymentIntentClientSecret: clientSecret,
-        allowsDelayedPaymentMethods: allowDelayedPaymentMethods,
-      ),
+    return StripeCheckoutSession(
+      sessionId: sessionId,
+      checkoutUrl: url,
     );
+  }
 
-    // Present + confirm
-    try {
-      await Stripe.instance.presentPaymentSheet();
-    } on StripeException catch (e, stack) {
-      SubscriptionConfig.debugLog(
-        'StripeException: ${e.error.localizedMessage ?? e.toString()}',
-      );
-      if (e.error.code == FailureCode.Canceled) {
-        return SubscriptionPaymentResult.canceled();
+  /// Consulta al backend para verificar si el Checkout ya fue liquidado.
+  Future<SubscriptionPaymentResult> confirmCheckoutSession({
+    required String sessionId,
+    int maxAttempts = 8,
+    Duration pollDelay = const Duration(seconds: 3),
+  }) async {
+    SubscriptionPaymentResult? pending;
+
+    for (var attempt = 0; attempt < maxAttempts; attempt++) {
+      final res = await _confirmCheckoutOnce(sessionId);
+      if (res.status != SubscriptionPaymentStatus.pending) {
+        return res;
       }
-      Error.throwWithStackTrace(e, stack);
+      pending = res;
+      await Future<void>.delayed(pollDelay);
     }
 
-    // El webhook actualizará Firestore cuando Stripe confirme la suscripción.
-    return SubscriptionPaymentResult.completed(subscriptionId);
+    return pending ??
+        SubscriptionPaymentResult.pending(
+          message: 'Seguimos validando tu pago con Stripe.',
+        );
+  }
+
+  Future<SubscriptionPaymentResult> _confirmCheckoutOnce(String sessionId) async {
+    final res = await _call(
+      'confirmCheckoutSession',
+      data: <String, dynamic>{'sessionId': sessionId},
+    ) as Map?;
+
+    final status = (res?['status'] as String? ?? '').toLowerCase();
+    final message = res?['message'] as String?;
+    final subscriptionId = res?['subscriptionId'] as String?;
+
+    switch (status) {
+      case 'active':
+      case 'activated':
+        if (subscriptionId == null || subscriptionId.isEmpty) {
+          throw StateError(
+            'Stripe confirmó el pago pero no devolvió la suscripción.',
+          );
+        }
+        return SubscriptionPaymentResult.activated(
+          subscriptionId: subscriptionId,
+          message: message,
+        );
+      case 'canceled':
+      case 'cancelled':
+        return SubscriptionPaymentResult.canceled(message: message);
+      default:
+        return SubscriptionPaymentResult.pending(message: message);
+    }
   }
 
   /// (Opcional) portal de facturación
