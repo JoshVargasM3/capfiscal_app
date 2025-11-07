@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:firebase_core/firebase_core.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../config/subscription_config.dart';
@@ -37,7 +38,6 @@ class _SubscriptionRequiredScreenState
   bool _waitingCheckoutResult = false;
   bool _sawCheckoutTransition = false;
   final _manualMethod = TextEditingController();
-  final SubscriptionService _subscriptionService = SubscriptionService();
   final SubscriptionPaymentService _paymentService =
       SubscriptionPaymentService.instance;
 
@@ -162,21 +162,31 @@ class _SubscriptionRequiredScreenState
 
     setState(() => _activatingManually = true);
     try {
-      final now = DateTime.now().toUtc();
-      await _subscriptionService.updateSubscription(
-        user.uid,
-        startDate: now,
-        endDate: now.add(const Duration(days: 30)),
+      final confirmation = await _paymentService.activateHostedCheckout(
         paymentMethod: method,
-        status: 'manual_active',
+        statusOverride: 'manual_active',
       );
+
       _manualMethod.clear();
       if (widget.onRefresh != null) {
-        await widget.onRefresh!.call();
+        try {
+          await widget.onRefresh!.call();
+        } on FirebaseException catch (err) {
+          if (err.code != 'permission-denied') rethrow;
+          SubscriptionConfig.debugLog(
+            'No se pudo refrescar tras activar manualmente: ${err.message}',
+          );
+        }
       }
+
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Activamos tu acceso manualmente.')),
+        SnackBar(
+          content: Text(
+            confirmation.message ??
+                'Activamos tu acceso manualmente por 30 días.',
+          ),
+        ),
       );
     } catch (e) {
       if (!mounted) return;
@@ -217,7 +227,14 @@ class _SubscriptionRequiredScreenState
 
       if (confirmation.isActive) {
         if (widget.onRefresh != null) {
-          await widget.onRefresh!.call();
+          try {
+            await widget.onRefresh!.call();
+          } on FirebaseException catch (err) {
+            if (err.code != 'permission-denied') rethrow;
+            SubscriptionConfig.debugLog(
+              'Refresco bloqueado tras Stripe: ${err.message}',
+            );
+          }
         }
         if (!mounted) return;
         ScaffoldMessenger.of(context).showSnackBar(

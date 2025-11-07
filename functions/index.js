@@ -608,26 +608,33 @@ exports.activateSubscriptionAccess = functions.https.onCall(async (data, context
     : '';
   const paymentMethod = paymentMethodRaw || 'Stripe Checkout';
 
+  const statusRaw = typeof data?.status === 'string' ? data.status.trim().toLowerCase() : '';
+  const allowedOverrides = new Set(['active', 'manual_active', 'pending', 'grace']);
+  const requestedStatus = allowedOverrides.has(statusRaw) ? statusRaw : null;
+
   const now = admin.firestore.Timestamp.now();
   const endDate = admin.firestore.Timestamp.fromDate(new Date(
     now.toDate().getTime() + durationDays * 24 * 60 * 60 * 1000,
   ));
 
+  const finalStatus = requestedStatus || 'active';
+  const accessGranted = finalStatus === 'active' || finalStatus === 'manual_active' || finalStatus === 'grace';
+
   const userRef = db.collection('users').doc(uid);
   await userRef.set({
-    subscriptionStatus: 'active',
-    'subscription.status': 'active',
+    subscriptionStatus: finalStatus,
+    'subscription.status': finalStatus,
     'subscription.paymentMethod': paymentMethod,
     'subscription.startDate': now,
     'subscription.endDate': endDate,
     'subscription.graceEndsAt': admin.firestore.FieldValue.delete(),
     'subscription.updatedAt': admin.firestore.FieldValue.serverTimestamp(),
     updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-    entitlements: { library: true },
+    entitlements: { library: accessGranted },
   }, { merge: true });
 
   return {
-    status: 'active',
+    status: finalStatus,
     message: `Activamos tu suscripción por ${durationDays} días.`,
     expiresAt: endDate.toDate().toISOString(),
   };

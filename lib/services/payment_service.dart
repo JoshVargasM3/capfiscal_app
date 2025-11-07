@@ -15,7 +15,8 @@ class SubscriptionCheckoutConfirmation {
   final String? message;
   final String? subscriptionId;
 
-  bool get isActive => status == 'active';
+  bool get isActive =>
+      status == 'active' || status == 'manual_active' || status == 'grace';
   bool get isPending => status == 'pending';
 }
 
@@ -40,12 +41,14 @@ class SubscriptionPaymentService {
   Future<SubscriptionCheckoutConfirmation> activateHostedCheckout({
     int durationDays = 30,
     String? paymentMethod,
+    String? statusOverride,
   }) async {
     final res = await _call(
       'activateSubscriptionAccess',
       data: <String, dynamic>{
         'durationDays': durationDays,
         if (paymentMethod != null) 'paymentMethod': paymentMethod,
+        if (statusOverride != null) 'status': statusOverride,
         if (kIsWeb) 'client': 'web',
       },
     ) as Map?;
