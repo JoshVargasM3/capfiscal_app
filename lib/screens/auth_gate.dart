@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 
@@ -26,7 +27,7 @@ class AuthGate extends StatelessWidget {
           );
         }
 
-        // Si hay usuario autenticado -> Home
+        // Si hay usuario autenticado -> Home (pasando por SubscriptionGate)
         if (snapshot.hasData) {
           final user = snapshot.data!;
           return _SubscriptionGate(user: user);
@@ -56,6 +57,10 @@ class _SubscriptionGateState extends State<_SubscriptionGate> {
   void initState() {
     super.initState();
     _stream = _service.watchSubscriptionStatus(widget.user.uid);
+
+    // Asegura que exista users/{uid} (NO toca campos protegidos)
+    // Esto cumple con tus reglas de Firestore.
+    unawaited(_warmUpUserDoc(widget.user));
   }
 
   @override
@@ -63,6 +68,19 @@ class _SubscriptionGateState extends State<_SubscriptionGate> {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.user.uid != widget.user.uid) {
       _stream = _service.watchSubscriptionStatus(widget.user.uid);
+      // Si cambia de usuario en caliente, asegurar el doc del nuevo uid.
+      unawaited(_warmUpUserDoc(widget.user));
+    }
+  }
+
+  Future<void> _warmUpUserDoc(User user) async {
+    try {
+      await SubscriptionService.ensureUserDoc(user);
+    } catch (e) {
+      // Silencioso: si por alguna razón hay un permiso denegado o condición de carrera,
+      // no bloquea la UI. Sigue el stream y el botón de pago seguirá funcionando.
+      // Puedes loguearlo si deseas:
+      // debugPrint('ensureUserDoc failed: $e');
     }
   }
 
@@ -90,7 +108,8 @@ class _SubscriptionGateState extends State<_SubscriptionGate> {
             status: SubscriptionStatus.empty(),
             onRefresh: _refresh,
             onSignOut: _signOut,
-            errorMessage: 'No pudimos verificar tu suscripción: ${snapshot.error}',
+            errorMessage:
+                'No pudimos verificar tu suscripción: ${snapshot.error}',
           );
         }
 

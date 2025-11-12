@@ -1,41 +1,40 @@
 import 'package:flutter/foundation.dart';
 
-/// Central configuration for paid subscription flows.
-///
-/// The values are resolved through `--dart-define` so secrets never end up in
-/// source control. In debug/profile builds fallback values can be provided to
-/// make local testing easier.
+/// Config central para los flujos de suscripción de pago.
 class SubscriptionConfig {
   const SubscriptionConfig._();
 
-  /// Stripe publishable key used by the mobile SDK (legacy PaymentSheet).
+  /// Clave publicable de Stripe (PaymentSheet móvil).
   static const String stripePublishableKey =
       String.fromEnvironment('STRIPE_PUBLISHABLE_KEY');
 
-  /// Default Stripe price to use when creating a subscription checkout.
-  static const String stripePriceId =
-      String.fromEnvironment('STRIPE_PRICE_ID');
+  /// (Opcional) Price de Stripe si usas Checkout/Subscriptions.
+  static const String stripePriceId = String.fromEnvironment('STRIPE_PRICE_ID');
 
-  /// Optional merchant name shown on the payment sheet.
-  static const String merchantDisplayName =
-      String.fromEnvironment('SUBSCRIPTION_MERCHANT_NAME',
-          defaultValue: 'CAPFISCAL');
+  /// Nombre que ve el usuario en la hoja de pago.
+  static const String merchantDisplayName = String.fromEnvironment(
+      'SUBSCRIPTION_MERCHANT_NAME',
+      defaultValue: 'CAPFISCAL');
 
-  /// Hosted Checkout URL used to charge the subscription via Stripe.
+  /// URL de Hosted Checkout (para flujo web).
   static const String stripeCheckoutUrl = String.fromEnvironment(
     'STRIPE_CHECKOUT_URL',
+    // Puedes cambiar esta URL por tu enlace real:
     defaultValue: 'https://buy.stripe.com/test_9B6cN425Hgck9Zm7n94Vy00',
   );
 
-  /// Whether the Stripe keys appear to be configured.
+  /// ¿Tenemos config suficiente para PaymentSheet (móvil)?
+  static bool get hasPaymentSheetConfiguration =>
+      stripePublishableKey.isNotEmpty;
+
+  /// ¿Tenemos config suficiente para Checkout Link (web)?
+  static bool get hasCheckoutConfiguration => stripeCheckoutUrl.isNotEmpty;
+
+  /// (Histórico) ¿ambas llaves para flujos antiguos?
   static bool get hasStripeConfiguration =>
       stripePublishableKey.isNotEmpty && stripePriceId.isNotEmpty;
 
-  /// Whether the hosted checkout link is ready to be used.
-  static bool get hasCheckoutConfiguration =>
-      stripeCheckoutUrl.isNotEmpty;
-
-  /// Helper log to keep noisy prints behind debug mode.
+  /// Log en debug.
   static void debugLog(String message) {
     if (kDebugMode) {
       // ignore: avoid_print

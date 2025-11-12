@@ -1,4 +1,5 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_auth/firebase_auth.dart' show User;
 
 /// Represents the normalized state of a user's paid subscription.
 enum SubscriptionState {
@@ -85,7 +86,6 @@ class SubscriptionStatus {
   }
 
   /// Whether some subscription data exists on the user profile.
-  /// (Evita marcar `expired` solo porque haya claves vacías en el mapa.)
   bool get hasData =>
       startDate != null ||
       endDate != null ||
@@ -196,6 +196,22 @@ class SubscriptionService {
 
   final FirebaseFirestore _firestore;
 
+  /// ====== NUEVO (opción B): asegurar users/{uid} sin campos protegidos ======
+  ///
+  /// Llama esto apenas tengas al usuario autenticado (p. ej. en AuthGate).
+  /// No escribe `subscription`, `status` ni `updatedAt` (cumple tus reglas).
+  static Future<void> ensureUserDoc(User user) async {
+    final ref = FirebaseFirestore.instance.collection('users').doc(user.uid);
+    final snap = await ref.get();
+    if (!snap.exists) {
+      await ref.set({
+        'email': user.email,
+        'displayName': user.displayName ?? '',
+        'createdAt': FieldValue.serverTimestamp(),
+      });
+    }
+  }
+
   /// Watches the subscription document for a given user.
   Stream<SubscriptionStatus> watchSubscriptionStatus(String uid) {
     final ref = _userDoc(uid);
@@ -210,6 +226,47 @@ class SubscriptionService {
       throw StateError('El perfil de usuario no existe en la base de datos.');
     }
     return SubscriptionStatus.fromSnapshot(snapshot);
+  }
+
+  /// ====== NUEVO (opción B): parche local tras PaymentSheet exitoso ======
+  ///
+  /// Escribe únicamente `subscription.*` y `updatedAt` (merge),
+  /// cumpliendo tus reglas de seguridad para el "client patch".
+  Future<void> applyLocalPaymentSuccess(
+    String uid, {
+    String paymentMethod = 'Stripe PaymentSheet',
+    int durationDays = 30,
+    DateTime? startAtUtc,
+  }) async {
+    final start = (startAtUtc ?? DateTime.now().toUtc());
+    final end = start.add(Duration(days: durationDays));
+
+    await updateSubscription(
+      uid,
+      startDate: start,
+      endDate: end,
+      paymentMethod: paymentMethod,
+      status: 'active', // valores permitidos por tus reglas
+    );
+  }
+
+  /// También puedes marcar 'pending' si el cargo queda en revisión.
+  Future<void> applyLocalPaymentPending(
+    String uid, {
+    String paymentMethod = 'Stripe PaymentSheet',
+    int durationDays = 30,
+    DateTime? startAtUtc,
+  }) async {
+    final start = (startAtUtc ?? DateTime.now().toUtc());
+    final end = start.add(Duration(days: durationDays));
+
+    await updateSubscription(
+      uid,
+      startDate: start,
+      endDate: end,
+      paymentMethod: paymentMethod,
+      status: 'pending',
+    );
   }
 
   /// Updates subscription fields. Pass `null` values to CLEAR fields (delete).
@@ -250,13 +307,11 @@ class SubscriptionService {
 
     if (status != null) {
       updates['subscription.status'] = status;
-      // Si aún necesitas un espejo en la raíz, descomenta:
-      // updates['status'] = status;
     } else {
       updates['subscription.status'] = FieldValue.delete();
-      // updates['status'] = FieldValue.delete();
     }
 
+    // Estos dos timestamps cumplen tu regla de "solo subscription y/o updatedAt".
     updates['subscription.updatedAt'] = FieldValue.serverTimestamp();
     updates['updatedAt'] = FieldValue.serverTimestamp();
 
@@ -280,7 +335,7 @@ DateTime? _parseDate(dynamic value) {
   }
   if (value is String && value.isNotEmpty) {
     final parsed = DateTime.tryParse(value);
-    return parsed == null ? null : parsed.toUtc();
+    return parsed?.toUtc();
   }
   return null;
 }

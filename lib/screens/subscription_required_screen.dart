@@ -1,10 +1,14 @@
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
-import 'package:firebase_core/firebase_core.dart';
 import 'package:url_launcher/url_launcher.dart';
+import 'package:http/http.dart' as http;
+import 'package:flutter_stripe/flutter_stripe.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_core/firebase_core.dart';
 
 import '../config/subscription_config.dart';
 import '../services/payment_service.dart';
@@ -29,8 +33,8 @@ class SubscriptionRequiredScreen extends StatefulWidget {
       _SubscriptionRequiredScreenState();
 }
 
-class _SubscriptionRequiredScreenState
-    extends State<SubscriptionRequiredScreen> with WidgetsBindingObserver {
+class _SubscriptionRequiredScreenState extends State<SubscriptionRequiredScreen>
+    with WidgetsBindingObserver {
   bool _refreshing = false;
   bool _openingContact = false;
   bool _activatingManually = false;
@@ -40,6 +44,11 @@ class _SubscriptionRequiredScreenState
   final _manualMethod = TextEditingController();
   final SubscriptionPaymentService _paymentService =
       SubscriptionPaymentService.instance;
+
+  // ====== Stripe PaymentSheet config ======
+  static const String _fnInitPaymentUrl =
+      'https://us-central1-capfiscal-biblioteca-app.cloudfunctions.net/stripePaymentIntentRequest';
+  static const int _planPriceCents = 19900; // $199.00 MXN
 
   static const _bgTop = Color(0xFF0A0A0B);
   static const _bgMid = Color(0xFF2A2A2F);
@@ -64,7 +73,8 @@ class _SubscriptionRequiredScreenState
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (!_waitingCheckoutResult) return;
 
-    if (state == AppLifecycleState.paused || state == AppLifecycleState.inactive) {
+    if (state == AppLifecycleState.paused ||
+        state == AppLifecycleState.inactive) {
       _sawCheckoutTransition = true;
     } else if (state == AppLifecycleState.resumed && _sawCheckoutTransition) {
       _sawCheckoutTransition = false;
@@ -82,17 +92,14 @@ class _SubscriptionRequiredScreenState
         SubscriptionState.active => 'Tu suscripción está activa.',
         SubscriptionState.grace =>
           'Tienes acceso en periodo de gracia temporal.',
-        SubscriptionState.pending =>
-          'Tu pago sigue pendiente de confirmación.',
+        SubscriptionState.pending => 'Tu pago sigue pendiente de confirmación.',
         SubscriptionState.blocked =>
           'Tu cuenta está bloqueada. Contacta a soporte.',
         SubscriptionState.expired =>
           'Seguimos detectando la suscripción expirada.',
-        SubscriptionState.none =>
-          'Aún no hay una suscripción registrada.',
+        SubscriptionState.none => 'Aún no hay una suscripción registrada.',
       };
-      ScaffoldMessenger.of(context)
-          .showSnackBar(SnackBar(content: Text(msg)));
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
@@ -120,8 +127,8 @@ class _SubscriptionRequiredScreenState
         if (!mounted) return;
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
-            content:
-                Text('No se pudo abrir el correo. Escríbenos a capfiscal.app@gmail.com'),
+            content: Text(
+                'No se pudo abrir el correo. Escríbenos a capfiscal.app@gmail.com'),
           ),
         );
       }
@@ -226,6 +233,19 @@ class _SubscriptionRequiredScreenState
       );
 
       if (confirmation.isActive) {
+        // === ESCRIBIR EN FIRESTORE (web/checkout) ===
+        await FirebaseFirestore.instance.collection('users').doc(user.uid).set({
+          'subscription': {
+            'status': 'active',
+            'startDate': Timestamp.now(),
+            'endDate': Timestamp.fromDate(
+              DateTime.now().add(const Duration(days: 30)),
+            ),
+            'paymentMethod': 'stripe_checkout',
+            'updatedAt': FieldValue.serverTimestamp(),
+          }
+        }, SetOptions(merge: true));
+
         if (widget.onRefresh != null) {
           try {
             await widget.onRefresh!.call();
@@ -290,8 +310,116 @@ class _SubscriptionRequiredScreenState
     }
   }
 
+  // ====== NUEVO: PaymentSheet nativo para Android/iOS ======
+  Future<void> _startPaymentWithPaymentSheet() async {
+    if (_processingPayment) return;
+
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Inicia sesión para completar el pago.')),
+      );
+      return;
+    }
+
+    setState(() => _processingPayment = true);
+
+    try {
+      final email = user.email ?? '${user.uid}@capfiscal.local';
+
+      // 1) Llamar a tu Cloud Function (HTTP)
+      final resp = await http.post(
+        Uri.parse(_fnInitPaymentUrl),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({
+          'amount': _planPriceCents, // centavos
+          'currency': 'mxn',
+          'email': email,
+          'uid': user.uid,
+          'description': 'Suscripción mensual CAPFISCAL',
+          'metadata': {'uid': user.uid},
+        }),
+      );
+
+      if (resp.statusCode != 200) {
+        throw Exception('Stripe init falló: ${resp.body}');
+      }
+      final data = jsonDecode(resp.body) as Map<String, dynamic>;
+      if (data['success'] != true) {
+        throw Exception('Stripe init falló: ${data['error']}');
+      }
+
+      // 2) Inicializar PaymentSheet
+      await Stripe.instance.initPaymentSheet(
+        paymentSheetParameters: SetupPaymentSheetParameters(
+          merchantDisplayName: 'CAPFISCAL',
+          paymentIntentClientSecret: data['paymentIntent'] as String,
+          customerId: data['customer'] as String,
+          customerEphemeralKeySecret: data['ephemeralKey'] as String,
+          allowsDelayedPaymentMethods: true,
+        ),
+      );
+
+      // 3) Presentar PaymentSheet
+      await Stripe.instance.presentPaymentSheet();
+
+      // === ESCRIBIR EN FIRESTORE (móvil/paymentsheet) ===
+      final start = Timestamp.now();
+      final end = Timestamp.fromDate(
+        DateTime.now().add(const Duration(days: 30)),
+      );
+
+      await FirebaseFirestore.instance.collection('users').doc(user.uid).set({
+        'subscription': {
+          'status': 'active',
+          'startDate': start,
+          'endDate': end,
+          'paymentMethod': 'card',
+          'updatedAt': FieldValue.serverTimestamp(),
+        }
+      }, SetOptions(merge: true));
+
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Pago realizado correctamente.')),
+      );
+
+      // 4) Refrescar estado para que AuthGate/SubscriptionGate muestren acceso
+      if (widget.onRefresh != null) {
+        try {
+          await widget.onRefresh!.call();
+        } catch (_) {}
+      }
+    } on StripeException catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            'Pago cancelado o fallido: ${e.error.localizedMessage ?? e.error.message ?? e.toString()}',
+          ),
+        ),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('No pudimos procesar el pago: $e')),
+      );
+    } finally {
+      if (mounted) setState(() => _processingPayment = false);
+    }
+  }
+
+  // ====== Reemplazo: usa PaymentSheet en mobile, Checkout Link en web ======
   Future<void> _startPayment() async {
     if (_processingPayment || _waitingCheckoutResult) return;
+
+    if (!kIsWeb) {
+      // Mobile (Android/iOS): PaymentSheet nativo
+      return _startPaymentWithPaymentSheet();
+    }
+
+    // ---- WEB: Fallback a tu flujo actual con Checkout Link ----
     final user = FirebaseAuth.instance.currentUser;
     if (user == null) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -322,14 +450,12 @@ class _SubscriptionRequiredScreenState
 
     setState(() => _processingPayment = true);
     try {
-      final mode = kIsWeb
-          ? LaunchMode.platformDefault
-          : LaunchMode.externalApplication;
+      final mode = LaunchMode.platformDefault;
 
       final launched = await launchUrl(
         uri,
         mode: mode,
-        webOnlyWindowName: kIsWeb ? '_self' : null,
+        webOnlyWindowName: '_self',
       );
 
       if (!launched) {
@@ -350,9 +476,7 @@ class _SubscriptionRequiredScreenState
       );
     } catch (e) {
       if (!mounted) return;
-      setState(() {
-        _waitingCheckoutResult = false;
-      });
+      setState(() => _waitingCheckoutResult = false);
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('No pudimos procesar el pago: $e')),
       );
@@ -373,20 +497,21 @@ class _SubscriptionRequiredScreenState
       SubscriptionState.none => 'Activa tu suscripción',
     };
 
-    final subtitle = widget.errorMessage ?? switch (status.state) {
-      SubscriptionState.active =>
-        'Detectamos un estado activo manual. Verifica tus datos.',
-      SubscriptionState.grace =>
-        'Aprovecha para completar tu renovación antes de que termine.',
-      SubscriptionState.pending =>
-        'Tu pago se registró, pero aún no se libera el acceso.',
-      SubscriptionState.blocked =>
-        'El equipo CAPFISCAL bloqueó tu acceso. Escríbenos si crees que es un error.',
-      SubscriptionState.expired =>
-        'Necesitas renovar tu plan mensual para seguir editando y descargando documentos.',
-      SubscriptionState.none =>
-        'Aún no contamos con una suscripción activa asociada a tu cuenta.',
-    };
+    final subtitle = widget.errorMessage ??
+        switch (status.state) {
+          SubscriptionState.active =>
+            'Detectamos un estado activo manual. Verifica tus datos.',
+          SubscriptionState.grace =>
+            'Aprovecha para completar tu renovación antes de que termine.',
+          SubscriptionState.pending =>
+            'Tu pago se registró, pero aún no se libera el acceso.',
+          SubscriptionState.blocked =>
+            'El equipo CAPFISCAL bloqueó tu acceso. Escríbenos si crees que es un error.',
+          SubscriptionState.expired =>
+            'Necesitas renovar tu plan mensual para seguir editando y descargando documentos.',
+          SubscriptionState.none =>
+            'Aún no contamos con una suscripción activa asociada a tu cuenta.',
+        };
 
     final details = <_DetailRow>[
       _DetailRow(
@@ -424,12 +549,21 @@ class _SubscriptionRequiredScreenState
       _ => _gold,
     };
 
+    // ====== CAMBIO CLAVE: lógica de visibilidad del botón según plataforma ======
     final showPaymentSection = status.state == SubscriptionState.none ||
         status.state == SubscriptionState.expired;
+
+    // Móvil: depende de la publishable key (PaymentSheet)
+    // Web: depende del Checkout URL
+    final hasMobilePay = SubscriptionConfig.stripePublishableKey.isNotEmpty;
+    final hasWebPay = SubscriptionConfig.hasCheckoutConfiguration;
+
     final showPaymentButton =
-        showPaymentSection && SubscriptionConfig.hasCheckoutConfiguration;
+        showPaymentSection && (kIsWeb ? hasWebPay : hasMobilePay);
+
     final showPaymentConfigHint =
-        showPaymentSection && !SubscriptionConfig.hasCheckoutConfiguration;
+        showPaymentSection && !(kIsWeb ? hasWebPay : hasMobilePay);
+    // ============================================================================
 
     return Container(
       decoration: const BoxDecoration(
@@ -455,11 +589,12 @@ class _SubscriptionRequiredScreenState
                     Text(
                       title,
                       textAlign: TextAlign.center,
-                      style: Theme.of(context).textTheme.headlineSmall?.copyWith(
-                            color: Colors.white,
-                            fontWeight: FontWeight.w800,
-                            letterSpacing: .4,
-                          ),
+                      style:
+                          Theme.of(context).textTheme.headlineSmall?.copyWith(
+                                color: Colors.white,
+                                fontWeight: FontWeight.w800,
+                                letterSpacing: .4,
+                              ),
                     ),
                     const SizedBox(height: 12),
                     Text(
@@ -491,11 +626,13 @@ class _SubscriptionRequiredScreenState
                         children: [
                           Text(
                             'Detalle de tu plan',
-                            style:
-                                Theme.of(context).textTheme.titleMedium?.copyWith(
-                                      color: Colors.white,
-                                      fontWeight: FontWeight.w700,
-                                    ),
+                            style: Theme.of(context)
+                                .textTheme
+                                .titleMedium
+                                ?.copyWith(
+                                  color: Colors.white,
+                                  fontWeight: FontWeight.w700,
+                                ),
                           ),
                           const SizedBox(height: 12),
                           for (final row in details) ...[
@@ -527,10 +664,10 @@ class _SubscriptionRequiredScreenState
                                 width: double.infinity,
                                 height: 46,
                                 child: ElevatedButton.icon(
-                                  onPressed:
-                                      (_processingPayment || _waitingCheckoutResult)
-                                          ? null
-                                          : _startPayment,
+                                  onPressed: (_processingPayment ||
+                                          _waitingCheckoutResult)
+                                      ? null
+                                      : _startPayment,
                                   icon: _processingPayment
                                       ? const SizedBox(
                                           width: 18,
@@ -571,9 +708,11 @@ class _SubscriptionRequiredScreenState
                                   borderRadius: BorderRadius.circular(12),
                                   border: Border.all(color: Colors.white12),
                                 ),
-                                child: const Text(
-                                  'Configura STRIPE_CHECKOUT_URL para habilitar el botón de pago.',
-                                  style: TextStyle(
+                                child: Text(
+                                  kIsWeb
+                                      ? 'Configura STRIPE_CHECKOUT_URL para habilitar el botón de pago en Web.'
+                                      : 'Define STRIPE_PUBLISHABLE_KEY para habilitar PaymentSheet en Android/iOS.',
+                                  style: const TextStyle(
                                     color: Color(0xFFBEBEC6),
                                     fontSize: 13,
                                   ),
@@ -583,11 +722,13 @@ class _SubscriptionRequiredScreenState
                           ],
                           Text(
                             'Activar manualmente',
-                            style:
-                                Theme.of(context).textTheme.titleSmall?.copyWith(
-                                      color: Colors.white,
-                                      fontWeight: FontWeight.w700,
-                                    ),
+                            style: Theme.of(context)
+                                .textTheme
+                                .titleSmall
+                                ?.copyWith(
+                                  color: Colors.white,
+                                  fontWeight: FontWeight.w700,
+                                ),
                           ),
                           const SizedBox(height: 8),
                           TextField(
@@ -606,11 +747,13 @@ class _SubscriptionRequiredScreenState
                               fillColor: const Color(0xFF2A2A30),
                               border: OutlineInputBorder(
                                 borderRadius: BorderRadius.circular(14),
-                                borderSide: const BorderSide(color: Colors.white12),
+                                borderSide:
+                                    const BorderSide(color: Colors.white12),
                               ),
                               enabledBorder: OutlineInputBorder(
                                 borderRadius: BorderRadius.circular(14),
-                                borderSide: const BorderSide(color: Colors.white12),
+                                borderSide:
+                                    const BorderSide(color: Colors.white12),
                               ),
                               focusedBorder: OutlineInputBorder(
                                 borderRadius: BorderRadius.circular(14),
@@ -623,8 +766,9 @@ class _SubscriptionRequiredScreenState
                             width: double.infinity,
                             height: 46,
                             child: ElevatedButton(
-                              onPressed:
-                                  _activatingManually ? null : _activateManually,
+                              onPressed: _activatingManually
+                                  ? null
+                                  : _activateManually,
                               style: ElevatedButton.styleFrom(
                                 backgroundColor: _gold,
                                 foregroundColor: Colors.black,
@@ -645,7 +789,8 @@ class _SubscriptionRequiredScreenState
                                     )
                                   : const Text(
                                       'Activar acceso',
-                                      style: TextStyle(fontWeight: FontWeight.w700),
+                                      style: TextStyle(
+                                          fontWeight: FontWeight.w700),
                                     ),
                             ),
                           ),
@@ -671,8 +816,8 @@ class _SubscriptionRequiredScreenState
                                 height: 18,
                                 child: CircularProgressIndicator(
                                   strokeWidth: 2,
-                                  valueColor:
-                                      AlwaysStoppedAnimation<Color>(Colors.black),
+                                  valueColor: AlwaysStoppedAnimation<Color>(
+                                      Colors.black),
                                 ),
                               )
                             : const Text(
@@ -700,8 +845,8 @@ class _SubscriptionRequiredScreenState
                                 height: 18,
                                 child: CircularProgressIndicator(
                                   strokeWidth: 2,
-                                  valueColor:
-                                      AlwaysStoppedAnimation<Color>(Colors.white),
+                                  valueColor: AlwaysStoppedAnimation<Color>(
+                                      Colors.white),
                                 ),
                               )
                             : const Text('Contactar soporte'),
@@ -755,7 +900,8 @@ class _DetailRowWidget extends StatelessWidget {
             child: Text(
               row.value,
               textAlign: TextAlign.end,
-              style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w600),
+              style: const TextStyle(
+                  color: Colors.white, fontWeight: FontWeight.w600),
             ),
           ),
         ],
@@ -774,7 +920,8 @@ String _formatDate(DateTime? date) {
 
 String _formatDateTime(DateTime date) {
   final local = date.toLocal();
-  final time = '${local.hour.toString().padLeft(2, '0')}:${local.minute.toString().padLeft(2, '0')}';
+  final time =
+      '${local.hour.toString().padLeft(2, '0')}:${local.minute.toString().padLeft(2, '0')}';
   return '${local.day.toString().padLeft(2, '0')}/'
       '${local.month.toString().padLeft(2, '0')}/'
       '${local.year} $time';
