@@ -72,6 +72,17 @@ Future<void> _configureFirebaseAppCheck() async {
       appleProvider: AppleProvider.deviceCheck,
     );
   }
+
+  // Garantiza que los tokens se renueven automáticamente para Cloud Functions.
+  await appCheck.setTokenAutoRefreshEnabled(true);
+
+  if (kDebugMode) {
+    debugPrint(
+      '[AppCheck] Debug activo. Si aparece un error 401 en Cloud Functions, '
+      'verifica que el token 9c0062ca-efd8-4179-bc80-fa6fe8cfd490 esté '
+      'registrado en la consola de Firebase.',
+    );
+  }
 }
 
 Future<void> _configureStripeSdk() async {
