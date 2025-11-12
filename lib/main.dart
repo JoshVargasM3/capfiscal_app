@@ -6,9 +6,11 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_app_check/firebase_app_check.dart';
+import 'package:flutter_stripe/flutter_stripe.dart';
 import 'package:cloud_functions/cloud_functions.dart'; // 👈 para callable ping
 
 import 'firebase_options.dart';
+import 'config/subscription_config.dart';
 
 // Screens
 import 'screens/auth_gate.dart';
@@ -38,16 +40,8 @@ Future<void> main() async {
     debugPrint('[FIREBASE] projectId=${o.projectId} appId=${o.appId}');
 
     // 🔐 Activa App Check en desarrollo para silenciar los avisos del Storage.
-    if (!kIsWeb) {
-      if (kDebugMode || kProfileMode) {
-        await FirebaseAppCheck.instance.activate(
-          androidProvider: AndroidProvider.debug,
-          appleProvider: AppleProvider.debug,
-        );
-      } else {
-        await FirebaseAppCheck.instance.activate();
-      }
-    }
+    await _configureFirebaseAppCheck();
+    await _configureStripeSdk();
 
     // Handler global: evita que errores burbujeen y cierren la app.
     ui.PlatformDispatcher.instance.onError = (error, stack) {
@@ -59,6 +53,46 @@ Future<void> main() async {
   }, (error, stack) {
     // TODO: log centralizado si lo deseas
   });
+}
+
+Future<void> _configureFirebaseAppCheck() async {
+  if (kIsWeb) {
+    return;
+  }
+
+  final appCheck = FirebaseAppCheck.instance;
+  if (kDebugMode || kProfileMode) {
+    await appCheck.activate(
+      androidProvider: AndroidProvider.debug,
+      appleProvider: AppleProvider.debug,
+    );
+  } else {
+    await appCheck.activate(
+      androidProvider: AndroidProvider.playIntegrity,
+      appleProvider: AppleProvider.deviceCheck,
+    );
+  }
+}
+
+Future<void> _configureStripeSdk() async {
+  final publishableKey = SubscriptionConfig.stripePublishableKey;
+  if (publishableKey.isEmpty) {
+    debugPrint(
+      '[Stripe] STRIPE_PUBLISHABLE_KEY no configurado. '
+      'Ejecuta la app con --dart-define=STRIPE_PUBLISHABLE_KEY=pk_test_...',
+    );
+    return;
+  }
+
+  Stripe.publishableKey = publishableKey;
+
+  try {
+    await Stripe.instance.applySettings();
+  } catch (err) {
+    debugPrint('[Stripe] No se pudieron aplicar los ajustes: $err');
+  }
+
+  SubscriptionConfig.debugLog('[Stripe] SDK inicializado');
 }
 
 class MyApp extends StatelessWidget {
