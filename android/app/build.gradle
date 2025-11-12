@@ -34,6 +34,11 @@ android {
         }
     }
 
+    // Recomendado para varias libs AndroidX (no estorba si no se usa)
+    buildFeatures {
+        viewBinding true
+    }
+
     compileOptions {
         sourceCompatibility JavaVersion.VERSION_17
         targetCompatibility JavaVersion.VERSION_17
@@ -46,4 +51,13 @@ android {
 
 flutter {
     source '../..'
+}
+
+dependencies {
+    // Necesarios para que Stripe detecte un tema compatible
+    implementation "androidx.appcompat:appcompat:1.7.0"
+    implementation "com.google.android.material:material:1.12.0"
+
+    // Utilidades AndroidX comunes
+    implementation "androidx.core:core-ktx:1.13.1"
 }

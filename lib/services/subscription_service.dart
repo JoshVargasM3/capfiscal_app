@@ -1,4 +1,5 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_auth/firebase_auth.dart' show User;
 
 /// Represents the normalized state of a user's paid subscription.
 enum SubscriptionState {
@@ -86,7 +87,11 @@ class SubscriptionStatus {
 
   /// Whether some subscription data exists on the user profile.
   bool get hasData =>
-      startDate != null || endDate != null || paymentMethod != null || raw.isNotEmpty;
+      startDate != null ||
+      endDate != null ||
+      graceEndsAt != null ||
+      paymentMethod != null ||
+      statusOverride != null;
 
   /// Normalised override in lowercase.
   String? get _statusLower => statusOverride?.trim().toLowerCase();
@@ -142,8 +147,10 @@ class SubscriptionStatus {
       endDate != null && endDate!.isAfter(DateTime.now().toUtc());
 
   /// Whether the user is still in a configured grace period.
-  bool get isInGrace => !isActive &&
-      graceEndsAt != null && graceEndsAt!.isAfter(DateTime.now().toUtc());
+  bool get isInGrace =>
+      !isActive &&
+      graceEndsAt != null &&
+      graceEndsAt!.isAfter(DateTime.now().toUtc());
 
   /// Friendly helper to render debug information.
   Map<String, Object?> toDebugMap() => <String, Object?>{
@@ -189,6 +196,22 @@ class SubscriptionService {
 
   final FirebaseFirestore _firestore;
 
+  /// ====== NUEVO (opción B): asegurar users/{uid} sin campos protegidos ======
+  ///
+  /// Llama esto apenas tengas al usuario autenticado (p. ej. en AuthGate).
+  /// No escribe `subscription`, `status` ni `updatedAt` (cumple tus reglas).
+  static Future<void> ensureUserDoc(User user) async {
+    final ref = FirebaseFirestore.instance.collection('users').doc(user.uid);
+    final snap = await ref.get();
+    if (!snap.exists) {
+      await ref.set({
+        'email': user.email,
+        'displayName': user.displayName ?? '',
+        'createdAt': FieldValue.serverTimestamp(),
+      });
+    }
+  }
+
   /// Watches the subscription document for a given user.
   Stream<SubscriptionStatus> watchSubscriptionStatus(String uid) {
     final ref = _userDoc(uid);
@@ -205,7 +228,48 @@ class SubscriptionService {
     return SubscriptionStatus.fromSnapshot(snapshot);
   }
 
-  /// Updates subscription fields. Pass `null` values to clear data.
+  /// ====== NUEVO (opción B): parche local tras PaymentSheet exitoso ======
+  ///
+  /// Escribe únicamente `subscription.*` y `updatedAt` (merge),
+  /// cumpliendo tus reglas de seguridad para el "client patch".
+  Future<void> applyLocalPaymentSuccess(
+    String uid, {
+    String paymentMethod = 'Stripe PaymentSheet',
+    int durationDays = 30,
+    DateTime? startAtUtc,
+  }) async {
+    final start = (startAtUtc ?? DateTime.now().toUtc());
+    final end = start.add(Duration(days: durationDays));
+
+    await updateSubscription(
+      uid,
+      startDate: start,
+      endDate: end,
+      paymentMethod: paymentMethod,
+      status: 'active', // valores permitidos por tus reglas
+    );
+  }
+
+  /// También puedes marcar 'pending' si el cargo queda en revisión.
+  Future<void> applyLocalPaymentPending(
+    String uid, {
+    String paymentMethod = 'Stripe PaymentSheet',
+    int durationDays = 30,
+    DateTime? startAtUtc,
+  }) async {
+    final start = (startAtUtc ?? DateTime.now().toUtc());
+    final end = start.add(Duration(days: durationDays));
+
+    await updateSubscription(
+      uid,
+      startDate: start,
+      endDate: end,
+      paymentMethod: paymentMethod,
+      status: 'pending',
+    );
+  }
+
+  /// Updates subscription fields. Pass `null` values to CLEAR fields (delete).
   Future<void> updateSubscription(
     String uid, {
     DateTime? startDate,
@@ -215,31 +279,42 @@ class SubscriptionService {
     String? status,
   }) async {
     final updates = <String, Object?>{};
+
     if (startDate != null) {
       updates['subscription.startDate'] = Timestamp.fromDate(startDate.toUtc());
     } else {
-      updates['subscription.startDate'] = null;
+      updates['subscription.startDate'] = FieldValue.delete();
     }
+
     if (endDate != null) {
       updates['subscription.endDate'] = Timestamp.fromDate(endDate.toUtc());
     } else {
-      updates['subscription.endDate'] = null;
+      updates['subscription.endDate'] = FieldValue.delete();
     }
+
     if (graceEndsAt != null) {
       updates['subscription.graceEndsAt'] =
           Timestamp.fromDate(graceEndsAt.toUtc());
     } else {
-      updates['subscription.graceEndsAt'] = null;
+      updates['subscription.graceEndsAt'] = FieldValue.delete();
     }
-    updates['subscription.paymentMethod'] = paymentMethod;
+
+    if (paymentMethod != null) {
+      updates['subscription.paymentMethod'] = paymentMethod;
+    } else {
+      updates['subscription.paymentMethod'] = FieldValue.delete();
+    }
+
     if (status != null) {
       updates['subscription.status'] = status;
-      updates['status'] = status;
     } else {
-      updates['subscription.status'] = null;
+      updates['subscription.status'] = FieldValue.delete();
     }
+
+    // Estos dos timestamps cumplen tu regla de "solo subscription y/o updatedAt".
     updates['subscription.updatedAt'] = FieldValue.serverTimestamp();
     updates['updatedAt'] = FieldValue.serverTimestamp();
+
     await _userDoc(uid).set(updates, SetOptions(merge: true));
   }
 
@@ -260,7 +335,7 @@ DateTime? _parseDate(dynamic value) {
   }
   if (value is String && value.isNotEmpty) {
     final parsed = DateTime.tryParse(value);
-    return parsed == null ? null : parsed.toUtc();
+    return parsed?.toUtc();
   }
   return null;
 }

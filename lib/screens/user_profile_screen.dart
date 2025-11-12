@@ -12,6 +12,7 @@ import '../widgets/app_top_bar.dart';
 import '../widgets/app_bottom_nav.dart';
 import '../widgets/custom_drawer.dart';
 import '../helpers/favorites_manager.dart';
+import '../helpers/subscription_guard.dart';
 
 /// 🎨 Paleta CAPFISCAL
 class _CapColors {
@@ -238,6 +239,7 @@ class _UserProfileScreenState extends State<UserProfileScreen> {
   }
 
   Future<void> _downloadAndOpenFile(Reference ref) async {
+    if (!await SubscriptionGuard.ensureActive(context)) return;
     try {
       final dir = await getApplicationDocumentsDirectory();
       final file = File('${dir.path}/${ref.name}');

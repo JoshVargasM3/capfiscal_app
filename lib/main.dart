@@ -3,9 +3,14 @@ import 'dart:ui' as ui;
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_app_check/firebase_app_check.dart';
+import 'package:flutter_stripe/flutter_stripe.dart';
+import 'package:cloud_functions/cloud_functions.dart'; // 👈 para callable ping
+
 import 'firebase_options.dart';
+import 'config/subscription_config.dart';
 
 // Screens
 import 'screens/auth_gate.dart';
@@ -30,17 +35,13 @@ Future<void> main() async {
       );
     }
 
+    // 👇 Log de diagnóstico: confirma a qué proyecto apunta el cliente
+    final o = Firebase.app().options;
+    debugPrint('[FIREBASE] projectId=${o.projectId} appId=${o.appId}');
+
     // 🔐 Activa App Check en desarrollo para silenciar los avisos del Storage.
-    if (!kIsWeb) {
-      if (kDebugMode || kProfileMode) {
-        await FirebaseAppCheck.instance.activate(
-          androidProvider: AndroidProvider.debug,
-          appleProvider: AppleProvider.debug,
-        );
-      } else {
-        await FirebaseAppCheck.instance.activate();
-      }
-    }
+    await _configureFirebaseAppCheck();
+    await _configureStripeSdk();
 
     // Handler global: evita que errores burbujeen y cierren la app.
     ui.PlatformDispatcher.instance.onError = (error, stack) {
@@ -52,6 +53,57 @@ Future<void> main() async {
   }, (error, stack) {
     // TODO: log centralizado si lo deseas
   });
+}
+
+Future<void> _configureFirebaseAppCheck() async {
+  if (kIsWeb) {
+    return;
+  }
+
+  final appCheck = FirebaseAppCheck.instance;
+  if (kDebugMode || kProfileMode) {
+    await appCheck.activate(
+      androidProvider: AndroidProvider.debug,
+      appleProvider: AppleProvider.debug,
+    );
+  } else {
+    await appCheck.activate(
+      androidProvider: AndroidProvider.playIntegrity,
+      appleProvider: AppleProvider.deviceCheck,
+    );
+  }
+
+  // Garantiza que los tokens se renueven automáticamente para Cloud Functions.
+  await appCheck.setTokenAutoRefreshEnabled(true);
+
+  if (kDebugMode) {
+    debugPrint(
+      '[AppCheck] Debug activo. Si aparece un error 401 en Cloud Functions, '
+      'verifica que el token 9c0062ca-efd8-4179-bc80-fa6fe8cfd490 esté '
+      'registrado en la consola de Firebase.',
+    );
+  }
+}
+
+Future<void> _configureStripeSdk() async {
+  final publishableKey = SubscriptionConfig.stripePublishableKey;
+  if (publishableKey.isEmpty) {
+    debugPrint(
+      '[Stripe] STRIPE_PUBLISHABLE_KEY no configurado. '
+      'Ejecuta la app con --dart-define=STRIPE_PUBLISHABLE_KEY=pk_test_...',
+    );
+    return;
+  }
+
+  Stripe.publishableKey = publishableKey;
+
+  try {
+    await Stripe.instance.applySettings();
+  } catch (err) {
+    debugPrint('[Stripe] No se pudieron aplicar los ajustes: $err');
+  }
+
+  SubscriptionConfig.debugLog('[Stripe] SDK inicializado');
 }
 
 class MyApp extends StatelessWidget {
@@ -70,6 +122,9 @@ class MyApp extends StatelessWidget {
         '/video': (context) => const VideoScreen(),
         '/chat': (context) => const ChatScreen(),
         '/perfil': (context) => const UserProfileScreen(),
+
+        // 🧪 Ruta de diagnóstico para probar la callable `ping`
+        '/_ping': (context) => const DebugPingScreen(),
       },
     );
   }
@@ -247,6 +302,83 @@ class _RecoveryScreen extends StatelessWidget {
                 (context as Element).reassemble(); // reintento rápido
               },
               child: const Text('Reintentar'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// ====== 🧪 Pantalla de diagnóstico para probar la callable `ping` ======
+/// Navega manualmente a '/_ping' (solo queda registrada la ruta; no hay botón visible)
+class DebugPingScreen extends StatefulWidget {
+  const DebugPingScreen({super.key});
+
+  @override
+  State<DebugPingScreen> createState() => _DebugPingScreenState();
+}
+
+class _DebugPingScreenState extends State<DebugPingScreen> {
+  String _result = 'Presiona "Probar ping"';
+
+  Future<void> _runPing() async {
+    setState(() => _result = 'Llamando…');
+    try {
+      final functions = FirebaseFunctions.instanceFor(
+        app: Firebase.app(), // 👈 MISMO app
+        region: 'us-central1',
+      );
+      final res = await functions.httpsCallable('ping').call();
+      setState(() => _result = 'OK: ${res.data}');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('PING => ${res.data}')),
+        );
+      }
+    } on FirebaseFunctionsException catch (e) {
+      setState(() => _result = 'Error: ${e.code}: ${e.message}');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Error: ${e.code}: ${e.message}')),
+        );
+      }
+    } catch (e) {
+      setState(() => _result = 'Error: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Error: $e')),
+        );
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final o = Firebase.app().options;
+    return Scaffold(
+      appBar: AppBar(title: const Text('Debug Ping')),
+      body: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('Proyecto: ${o.projectId}\nAppId: ${o.appId}'),
+            const SizedBox(height: 12),
+            FilledButton.icon(
+              onPressed: _runPing,
+              icon: const Icon(Icons.cloud),
+              label: const Text('Probar ping'),
+            ),
+            const SizedBox(height: 12),
+            Text(
+              _result,
+              style: const TextStyle(fontFamily: 'monospace'),
+            ),
+            const SizedBox(height: 8),
+            const Text(
+              'Esperado: { uid: "<tu uid>", appCheck: true/false }',
+              style: TextStyle(color: Colors.grey),
             ),
           ],
         ),
