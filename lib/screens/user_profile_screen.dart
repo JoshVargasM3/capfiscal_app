@@ -659,26 +659,6 @@ class _UserProfileScreenState extends State<UserProfileScreen> {
                             ),
                           ),
                           const Spacer(),
-                          OutlinedButton.icon(
-                            style: OutlinedButton.styleFrom(
-                              side:
-                                  const BorderSide(color: _CapColors.goldDark),
-                              foregroundColor: _CapColors.gold,
-                              backgroundColor: _CapColors.surface,
-                              padding: const EdgeInsets.symmetric(
-                                  horizontal: 10, vertical: 8),
-                            ),
-                            onPressed: _signingOut ? null : _confirmSignOut,
-                            icon: _signingOut
-                                ? const SizedBox(
-                                    width: 16,
-                                    height: 16,
-                                    child: CircularProgressIndicator(
-                                        strokeWidth: 2),
-                                  )
-                                : const Icon(Icons.logout_rounded, size: 18),
-                            label: const Text('Cerrar sesión'),
-                          ),
                         ],
                       ),
                     ),

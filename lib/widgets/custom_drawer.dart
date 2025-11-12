@@ -42,7 +42,7 @@ class _CustomDrawerState extends State<CustomDrawer> {
     final subscriptionStatus = subscriptionScope?.status;
 
     // Navegación segura desde el Drawer
-    void _go(String route) {
+    void go(String route) {
       final navigator = Navigator.of(context);
       final currentRoute = current;
 
@@ -61,7 +61,7 @@ class _CustomDrawerState extends State<CustomDrawer> {
       });
     }
 
-    Future<void> _signOut() async {
+    Future<void> signOut() async {
       // Cierra el Drawer primero para no dejar context colgando
       if (Navigator.of(context).canPop()) {
         Navigator.of(context).pop();
@@ -86,7 +86,7 @@ class _CustomDrawerState extends State<CustomDrawer> {
       });
     }
 
-    Future<void> _confirmSignOut() async {
+    Future<void> confirmSignOut() async {
       final ok = await showDialog<bool>(
         context: context,
         builder: (dialogContext) => AlertDialog(
@@ -140,7 +140,7 @@ class _CustomDrawerState extends State<CustomDrawer> {
 
       if (!mounted) return;
       if (ok == true) {
-        await _signOut();
+        await signOut();
       }
     }
 
@@ -151,7 +151,7 @@ class _CustomDrawerState extends State<CustomDrawer> {
     }) {
       final bool selected = current == route;
       return InkWell(
-        onTap: () => _go(route),
+        onTap: () => go(route),
         borderRadius: BorderRadius.circular(12),
         splashColor: CustomDrawer._gold.withOpacity(.12),
         child: Container(
@@ -232,7 +232,7 @@ class _CustomDrawerState extends State<CustomDrawer> {
                       children: [
                         // 👇 Navega a /perfil al tocar la foto
                         InkWell(
-                          onTap: () => _go('/perfil'),
+                          onTap: () => go('/perfil'),
                           borderRadius: BorderRadius.circular(48),
                           child: CircleAvatar(
                             radius: 48,
@@ -373,7 +373,7 @@ class _CustomDrawerState extends State<CustomDrawer> {
                         foregroundColor: CustomDrawer._gold,
                         backgroundColor: CustomDrawer._surface,
                       ),
-                      onPressed: _confirmSignOut,
+                      onPressed: confirmSignOut,
                       icon: const Icon(Icons.logout_rounded, size: 18),
                       label: const Text(
                         'Cerrar Sesión',

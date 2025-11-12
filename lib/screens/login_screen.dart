@@ -123,8 +123,8 @@ class _LoginScreenState extends State<LoginScreen> {
     if (activateImmediately) {
       updates['subscription.status'] = 'manual_active';
       updates['subscription.startDate'] = startDate ?? Timestamp.fromDate(now);
-      updates['subscription.endDate'] = endDate ??
-          Timestamp.fromDate(now.add(const Duration(days: 30)));
+      updates['subscription.endDate'] =
+          endDate ?? Timestamp.fromDate(now.add(const Duration(days: 30)));
       updates['status'] = 'manual_active';
     }
 
@@ -434,8 +434,7 @@ class _LoginScreenState extends State<LoginScreen> {
                               TextFormField(
                                 controller: _paymentMethod,
                                 enabled: !_loading,
-                                style:
-                                    const TextStyle(color: _CapColors.text),
+                                style: const TextStyle(color: _CapColors.text),
                                 decoration: _fieldDeco(
                                   label: 'Método de pago (opcional)',
                                   icon: Icons.credit_card,
@@ -448,11 +447,10 @@ class _LoginScreenState extends State<LoginScreen> {
                                     shape: RoundedRectangleBorder(
                                       borderRadius: BorderRadius.circular(6),
                                     ),
-                                    fillColor:
-                                        MaterialStateProperty.resolveWith(
+                                    fillColor: WidgetStateProperty.resolveWith(
                                       (states) {
-                                        if (states.contains(
-                                            MaterialState.selected)) {
+                                        if (states
+                                            .contains(WidgetState.selected)) {
                                           return _CapColors.gold;
                                         }
                                         return Colors.white38;
