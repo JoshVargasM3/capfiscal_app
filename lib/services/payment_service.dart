@@ -9,11 +9,13 @@ class SubscriptionCheckoutConfirmation {
     required this.status,
     this.message,
     this.subscriptionId,
+    this.cancelsAt,
   });
 
   final String status;
   final String? message;
   final String? subscriptionId;
+  final DateTime? cancelsAt;
 
   bool get isActive =>
       status == 'active' || status == 'manual_active' || status == 'grace';
@@ -61,6 +63,37 @@ class SubscriptionPaymentService {
       status: status,
       message: message,
       subscriptionId: subscriptionId,
+      cancelsAt: _parseDate(res?['cancelsAt']),
+    );
+  }
+
+  /// Marks the subscription to cancel at the end of the current period.
+  Future<SubscriptionCheckoutConfirmation> scheduleCancellation(
+      {String? subscriptionId}) async {
+    final res = await _call(
+      'scheduleSubscriptionCancellation',
+      data: {
+        if (subscriptionId != null) 'subscriptionId': subscriptionId,
+      },
+    ) as Map?;
+    final status = (res?['status'] as String? ?? 'pending').toLowerCase();
+    return SubscriptionCheckoutConfirmation(
+      status: status,
+      message: res?['message'] as String?,
+      subscriptionId: res?['subscriptionId'] as String? ?? subscriptionId,
+      cancelsAt: _parseDate(res?['cancelsAt']),
+    );
+  }
+
+  /// Re-enables recurring billing if the user changed their mind.
+  Future<SubscriptionCheckoutConfirmation> resumeCancellation() async {
+    final res = await _call('resumeSubscriptionCancellation') as Map?;
+    final status = (res?['status'] as String? ?? 'active').toLowerCase();
+    return SubscriptionCheckoutConfirmation(
+      status: status,
+      message: res?['message'] as String?,
+      subscriptionId: res?['subscriptionId'] as String?,
+      cancelsAt: _parseDate(res?['cancelsAt']),
     );
   }
 
@@ -106,4 +139,16 @@ class SubscriptionPaymentService {
       rethrow;
     }
   }
+}
+
+DateTime? _parseDate(dynamic value) {
+  if (value == null) return null;
+  if (value is DateTime) return value;
+  if (value is int) {
+    return DateTime.fromMillisecondsSinceEpoch(value, isUtc: true);
+  }
+  if (value is String && value.isNotEmpty) {
+    return DateTime.tryParse(value)?.toUtc();
+  }
+  return null;
 }

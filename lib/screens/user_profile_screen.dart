@@ -13,6 +13,8 @@ import '../widgets/app_bottom_nav.dart';
 import '../widgets/custom_drawer.dart';
 import '../helpers/favorites_manager.dart';
 import '../helpers/subscription_guard.dart';
+import '../services/subscription_service.dart';
+import '../services/payment_service.dart';
 
 /// 🎨 Paleta CAPFISCAL
 class _CapColors {
@@ -41,6 +43,9 @@ class _UserProfileScreenState extends State<UserProfileScreen> {
   final _auth = FirebaseAuth.instance;
   final _db = FirebaseFirestore.instance;
   final _storage = FirebaseStorage.instance;
+  final SubscriptionService _subscriptionService = SubscriptionService();
+  final SubscriptionPaymentService _paymentService =
+      SubscriptionPaymentService.instance;
 
   final _nameCtrl = TextEditingController();
   final _phoneCtrl = TextEditingController();
@@ -51,6 +56,8 @@ class _UserProfileScreenState extends State<UserProfileScreen> {
   bool _saving = false;
   bool _editing = false;
   bool _signingOut = false;
+  bool _updatingPaymentMethods = false;
+  bool _updatingSubscription = false;
 
   // Favoritos
   bool _loadingFavs = true;
@@ -63,6 +70,11 @@ class _UserProfileScreenState extends State<UserProfileScreen> {
   DateTime? _startDate;
   DateTime? _endDate;
   String? _paymentMethod;
+  List<StoredPaymentMethod> _paymentMethods = [];
+  bool _cancelAtPeriodEnd = false;
+  DateTime? _cancelsAt;
+  String? _stripeSubscriptionId;
+  SubscriptionState? _subscriptionState;
 
   @override
   void initState() {
@@ -104,14 +116,16 @@ class _UserProfileScreenState extends State<UserProfileScreen> {
       _cityCtrl.text = (data['city'] ?? '').toString();
       _photoUrl = data['photoUrl'] as String?;
 
-      final sub = data['subscription'] as Map<String, dynamic>?;
-      if (sub != null) {
-        final start = sub['startDate'];
-        final end = sub['endDate'];
-        _paymentMethod = sub['paymentMethod']?.toString();
-        if (start is Timestamp) _startDate = start.toDate();
-        if (end is Timestamp) _endDate = end.toDate();
-      }
+      final status = SubscriptionStatus.fromUserData(data);
+      _startDate = status.startDate;
+      _endDate = status.endDate;
+      _paymentMethod =
+          status.paymentMethod ?? status.primaryPaymentMethod?.label;
+      _paymentMethods = status.paymentMethods;
+      _cancelAtPeriodEnd = status.cancelAtPeriodEnd;
+      _cancelsAt = status.cancellationEffectiveDate;
+      _subscriptionState = status.state;
+      _stripeSubscriptionId = status.stripeSubscriptionId;
 
       await _loadFavorites();
     } catch (_) {
@@ -235,6 +249,27 @@ class _UserProfileScreenState extends State<UserProfileScreen> {
     } catch (_) {
       if (!mounted) return;
       setState(() => _loadingFavs = false);
+    }
+  }
+
+  String _subscriptionLabel() {
+    final state = _subscriptionState;
+    if (state == null) return 'Sin información';
+    switch (state) {
+      case SubscriptionState.active:
+        return _cancelAtPeriodEnd
+            ? 'Activa (se cancelará al final del periodo)'
+            : 'Activa';
+      case SubscriptionState.grace:
+        return 'En periodo de gracia';
+      case SubscriptionState.pending:
+        return 'Pago pendiente de confirmación';
+      case SubscriptionState.blocked:
+        return 'Cuenta bloqueada';
+      case SubscriptionState.expired:
+        return 'Expirada';
+      case SubscriptionState.none:
+        return 'Sin suscripción';
     }
   }
 
@@ -442,6 +477,192 @@ class _UserProfileScreenState extends State<UserProfileScreen> {
     await user.updatePhotoURL(null);
 
     if (mounted) setState(() => _photoUrl = null);
+  }
+
+  Future<void> _addPaymentMethod() async {
+    final labelCtrl = TextEditingController();
+    final brandCtrl = TextEditingController(text: 'Tarjeta');
+    final last4Ctrl = TextEditingController();
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: const Text('Nuevo método de pago'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            TextField(
+              controller: labelCtrl,
+              decoration: const InputDecoration(labelText: 'Alias'),
+            ),
+            TextField(
+              controller: brandCtrl,
+              decoration: const InputDecoration(labelText: 'Marca (Visa, SPEI, etc.)'),
+            ),
+            TextField(
+              controller: last4Ctrl,
+              keyboardType: TextInputType.number,
+              decoration: const InputDecoration(labelText: 'Últimos 4 dígitos'),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancelar'),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Guardar'),
+          ),
+        ],
+      ),
+    );
+
+    if (ok != true) {
+      labelCtrl.dispose();
+      brandCtrl.dispose();
+      last4Ctrl.dispose();
+      return;
+    }
+
+    final alias = labelCtrl.text.trim();
+    final brand = brandCtrl.text.trim();
+    final digits = last4Ctrl.text.replaceAll(RegExp(r'\D'), '');
+    final last4 = digits.length <= 4
+        ? digits.padLeft(4, '*')
+        : digits.substring(digits.length - 4);
+
+    final newMethod = StoredPaymentMethod(
+      id: 'pm_${DateTime.now().millisecondsSinceEpoch}',
+      label: alias.isEmpty ? 'Método ${_paymentMethods.length + 1}' : alias,
+      brand: brand.isEmpty ? 'tarjeta' : brand,
+      last4: last4,
+      isDefault: _paymentMethods.isEmpty,
+      createdAt: DateTime.now().toUtc(),
+    );
+
+    await _savePaymentMethods([..._paymentMethods, newMethod]);
+
+    labelCtrl.dispose();
+    brandCtrl.dispose();
+    last4Ctrl.dispose();
+  }
+
+  Future<void> _setPrimaryMethod(StoredPaymentMethod method) async {
+    final updated = _paymentMethods
+        .map((m) => m.copyWith(isDefault: m.id == method.id))
+        .toList();
+    await _savePaymentMethods(updated);
+  }
+
+  Future<void> _removePaymentMethod(StoredPaymentMethod method) async {
+    final updated = _paymentMethods
+        .where((m) => m.id != method.id)
+        .toList(growable: false);
+    if (updated.isNotEmpty &&
+        updated.every((m) => m.isDefault == false)) {
+      updated[0] = updated[0].copyWith(isDefault: true);
+    }
+    await _savePaymentMethods(updated);
+  }
+
+  Future<void> _savePaymentMethods(List<StoredPaymentMethod> methods) async {
+    final uid = _auth.currentUser?.uid;
+    if (uid == null) return;
+    setState(() => _updatingPaymentMethods = true);
+    try {
+      await _subscriptionService.updateSubscription(
+        uid,
+        paymentMethods: methods,
+        paymentMethod: methods.isNotEmpty
+            ? methods
+                .firstWhere((m) => m.isDefault, orElse: () => methods.first)
+                .label
+            : null,
+      );
+      if (!mounted) return;
+      setState(() {
+        _paymentMethods = methods;
+        _paymentMethod = methods.isNotEmpty
+            ? methods
+                .firstWhere((m) => m.isDefault, orElse: () => methods.first)
+                .label
+            : null;
+      });
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Métodos actualizados.')),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('No se pudieron guardar los cambios: $e')),
+      );
+    } finally {
+      if (mounted) setState(() => _updatingPaymentMethods = false);
+    }
+  }
+
+  Future<void> _scheduleCancellation() async {
+    final uid = _auth.currentUser?.uid;
+    if (uid == null) return;
+    setState(() => _updatingSubscription = true);
+    try {
+      final confirmation = await _paymentService.scheduleCancellation(
+        subscriptionId: _stripeSubscriptionId,
+      );
+      final effective = confirmation.cancelsAt ??
+          _endDate ??
+          DateTime.now().toUtc().add(const Duration(days: 30));
+      await _subscriptionService.updateSubscription(
+        uid,
+        cancelAtPeriodEnd: true,
+        cancelsAt: effective,
+      );
+      if (!mounted) return;
+      setState(() {
+        _cancelAtPeriodEnd = true;
+        _cancelsAt = effective;
+      });
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+            content: Text('Seguiremos activos hasta ${_fmtDate(effective)}.')),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('No pudimos programar la cancelación: $e')),
+      );
+    } finally {
+      if (mounted) setState(() => _updatingSubscription = false);
+    }
+  }
+
+  Future<void> _resumeCancellation() async {
+    final uid = _auth.currentUser?.uid;
+    if (uid == null) return;
+    setState(() => _updatingSubscription = true);
+    try {
+      await _paymentService.resumeCancellation();
+      await _subscriptionService.updateSubscription(
+        uid,
+        cancelAtPeriodEnd: false,
+      );
+      if (!mounted) return;
+      setState(() {
+        _cancelAtPeriodEnd = false;
+        _cancelsAt = null;
+      });
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Reactivamos tu suscripción.')),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('No pudimos reactivar: $e')),
+      );
+    } finally {
+      if (mounted) setState(() => _updatingSubscription = false);
+    }
   }
 
   // --------- Acciones de cuenta ---------
@@ -882,7 +1103,127 @@ class _UserProfileScreenState extends State<UserProfileScreen> {
                     _SubscriptionRow(
                         label: 'FECHA DE TÉRMINO', value: _fmtDate(_endDate)),
                     _SubscriptionRow(
-                        label: 'MÉTODO DE PAGO', value: _paymentMethod ?? '--'),
+                        label: 'MÉTODO DE PAGO',
+                        value: _paymentMethod ??
+                            _paymentMethods.firstWhere(
+                                  (m) => m.isDefault,
+                                  orElse: () =>
+                                      _paymentMethods.isNotEmpty
+                                          ? _paymentMethods.first
+                                          : const StoredPaymentMethod(
+                                              id: 'default',
+                                              label: '--',
+                                              brand: '--',
+                                              last4: '----',
+                                              isDefault: true,
+                                            ),
+                                ).label),
+
+                    if (_subscriptionState != null)
+                      Padding(
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 16, vertical: 6),
+                        child: Align(
+                          alignment: Alignment.centerLeft,
+                          child: Chip(
+                            backgroundColor: Colors.white10,
+                            label: Text(
+                              _subscriptionLabel(),
+                              style: const TextStyle(
+                                  color: _CapColors.text,
+                                  fontWeight: FontWeight.w600),
+                            ),
+                          ),
+                        ),
+                      ),
+                    // Aviso cuando existe una cancelación programada
+                    if (_cancelAtPeriodEnd)
+                      Padding(
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 16, vertical: 4),
+                        child: Container(
+                          padding: const EdgeInsets.all(12),
+                          decoration: BoxDecoration(
+                            color: Colors.orange.withOpacity(.15),
+                            borderRadius: BorderRadius.circular(12),
+                          ),
+                          child: Text(
+                            _cancelsAt == null
+                                ? 'La suscripción se cancelará al final del periodo actual.'
+                                : 'La suscripción seguirá activa hasta ${_fmtDate(_cancelsAt)}.',
+                            style: const TextStyle(color: _CapColors.text),
+                          ),
+                        ),
+                      ),
+                    Padding(
+                      padding: const EdgeInsets.fromLTRB(16, 4, 16, 8),
+                      child: Row(
+                        children: [
+                          Expanded(
+                            child: OutlinedButton(
+                              onPressed: _updatingSubscription
+                                  ? null
+                                  : _cancelAtPeriodEnd
+                                      ? _resumeCancellation
+                                      : _scheduleCancellation,
+                              child: Text(_cancelAtPeriodEnd
+                                  ? 'Reactivar suscripción'
+                                  : 'Cancelar al final del periodo'),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+
+                    // Gestión de métodos de pago (principal + alternos)
+                    Padding(
+                      padding: const EdgeInsets.fromLTRB(16, 16, 16, 6),
+                      child: Row(
+                        children: [
+                          Text(
+                            'MÉTODOS DE PAGO',
+                            style: Theme.of(context)
+                                .textTheme
+                                .titleMedium
+                                ?.copyWith(
+                                  color: _CapColors.gold,
+                                  fontWeight: FontWeight.w800,
+                                ),
+                          ),
+                          const Spacer(),
+                          IconButton(
+                            tooltip: 'Agregar',
+                            onPressed:
+                                _updatingPaymentMethods ? null : _addPaymentMethod,
+                            icon: const Icon(Icons.add, color: _CapColors.text),
+                          ),
+                        ],
+                      ),
+                    ),
+                    Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 16),
+                      child: Column(
+                        children: _paymentMethods.isEmpty
+                            ? [
+                                const Text(
+                                  'Aún no guardas métodos de pago alternos.',
+                                  style: TextStyle(color: _CapColors.textMuted),
+                                ),
+                              ]
+                            : _paymentMethods
+                                .map(
+                                  (method) => _PaymentMethodCard(
+                                    method: method,
+                                    isUpdating: _updatingPaymentMethods,
+                                    onSetPrimary: () =>
+                                        _setPrimaryMethod(method),
+                                    onRemove: () =>
+                                        _removePaymentMethod(method),
+                                  ),
+                                )
+                                .toList(),
+                      ),
+                    ),
 
                     // ===== Favoritos =====
                     Padding(
@@ -1116,6 +1457,58 @@ class _SubscriptionRow extends StatelessWidget {
             ),
           ),
         ],
+      ),
+    );
+  }
+}
+
+class _PaymentMethodCard extends StatelessWidget {
+  const _PaymentMethodCard({
+    required this.method,
+    required this.isUpdating,
+    required this.onSetPrimary,
+    required this.onRemove,
+  });
+
+  final StoredPaymentMethod method;
+  final bool isUpdating;
+  final VoidCallback onSetPrimary;
+  final VoidCallback onRemove;
+
+  @override
+  Widget build(BuildContext context) {
+    return Card(
+      color: _CapColors.surface,
+      margin: const EdgeInsets.only(bottom: 12),
+      child: ListTile(
+        title: Text(
+          method.label,
+          style: const TextStyle(color: _CapColors.text),
+        ),
+        subtitle: Text(
+          '${method.brand.toUpperCase()} · •••• ${method.last4}',
+          style: const TextStyle(color: _CapColors.textMuted),
+        ),
+        trailing: method.isDefault
+            ? const Chip(
+                label: Text('Principal'),
+                backgroundColor: Colors.white10,
+                labelStyle: TextStyle(color: _CapColors.text),
+              )
+            : Wrap(
+                spacing: 6,
+                children: [
+                  TextButton(
+                    onPressed: isUpdating ? null : onSetPrimary,
+                    child: const Text('Principal'),
+                  ),
+                  IconButton(
+                    onPressed: isUpdating ? null : onRemove,
+                    icon: const Icon(Icons.delete_outline,
+                        color: Colors.redAccent),
+                  ),
+                ],
+              ),
       ),
     );
   }

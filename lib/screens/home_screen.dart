@@ -181,23 +181,12 @@ class _HomeScreenState extends State<HomeScreen> {
     super.dispose();
   }
 
-  // Altura dinámica del carrusel según imagen actual + orientación
-  double _carouselHeight(BuildContext context) {
-    final size = MediaQuery.of(context).size;
-    final w = size.width - 24; // padding horizontal 12+12
-    final h = size.height;
-    final isLandscape = size.width > size.height;
-
-    final ratio = (_cursoAspect.isNotEmpty && _page < _cursoAspect.length)
-        ? (_cursoAspect[_page] ?? (16 / 9))
-        : (16 / 9);
-
-    final rawH = w / ratio;
-    // Topes más generosos en landscape para aprovechar pantallas anchas
-    final maxH = h * (isLandscape ? 0.8 : 0.65);
-    final minH = isLandscape ? 180.0 : 200.0;
-
-    return rawH.clamp(minH, maxH);
+  // Calcula el aspect ratio actual para mantener el carrusel dentro del viewport
+  double _currentAspectRatio() {
+    if (_cursoAspect.isNotEmpty && _page < _cursoAspect.length) {
+      return _cursoAspect[_page] ?? (16 / 9);
+    }
+    return 16 / 9;
   }
 
   // -------- Visor Pantalla Completa ----------
@@ -396,116 +385,27 @@ class _HomeScreenState extends State<HomeScreen> {
               // Carrusel responsive (rellena contenedor)
               Padding(
                 padding: const EdgeInsets.symmetric(horizontal: 12),
-                child: ClipRRect(
-                  borderRadius: BorderRadius.circular(16),
-                  child: AnimatedContainer(
-                    duration: const Duration(milliseconds: 250),
-                    curve: Curves.easeInOut,
-                    height: _loadingCursos || _cursoUrls.isEmpty
-                        ? 200
-                        : _carouselHeight(context),
-                    color: _CapColors.surface,
-                    child: _loadingCursos
-                        ? const HomeModuleSkeleton()
-                        : (_errorCursos != null)
-                            ? Center(
-                                child: Padding(
-                                  padding: const EdgeInsets.all(12.0),
-                                  child: Text(
-                                    _errorCursos!,
-                                    textAlign: TextAlign.center,
-                                    style: const TextStyle(
-                                      color: _CapColors.textMuted,
-                                    ),
-                                  ),
-                                ),
-                              )
-                            : (_cursoUrls.isEmpty)
-                                ? const Center(
-                                    child: Text(
-                                      'Aún no hay cursos publicados.',
-                                      style: TextStyle(
-                                        color: _CapColors.textMuted,
-                                      ),
-                                    ),
-                                  )
-                                : Stack(
-                                    alignment: Alignment.bottomCenter,
-                                    children: [
-                                      PageView.builder(
-                                        controller: _pageCtrl,
-                                        itemCount: _cursoUrls.length,
-                                        onPageChanged: (i) =>
-                                            setState(() => _page = i),
-                                        itemBuilder: (_, i) {
-                                          final url = _cursoUrls[i];
-                                          return GestureDetector(
-                                            onTap: () => _openFullScreen(i),
-                                            child: Hero(
-                                              tag: 'curso_$i',
-                                              child: Container(
-                                                color: _CapColors.surfaceAlt,
-                                                alignment: Alignment.center,
-                                                child: Image.network(
-                                                  url,
-                                                  // 👉 rellena el contenedor manteniendo proporción
-                                                  fit: BoxFit.cover,
-                                                  width: double.infinity,
-                                                  height: double.infinity,
-                                                  loadingBuilder: (c, w, p) =>
-                                                      p == null
-                                                          ? w
-                                                          : const Center(
-                                                              child:
-                                                                  CircularProgressIndicator(
-                                                                color:
-                                                                    _CapColors
-                                                                        .gold,
-                                                              ),
-                                                            ),
-                                                  errorBuilder: (_, __, ___) =>
-                                                      const Center(
-                                                    child: Icon(
-                                                      Icons
-                                                          .image_not_supported_outlined,
-                                                      color: Colors.white38,
-                                                      size: 48,
-                                                    ),
-                                                  ),
-                                                ),
-                                              ),
-                                            ),
-                                          );
-                                        },
-                                      ),
-                                      // Indicadores
-                                      Positioned(
-                                        bottom: 10,
-                                        child: Row(
-                                          children: List.generate(
-                                            _cursoUrls.length,
-                                            (i) => AnimatedContainer(
-                                              duration: const Duration(
-                                                  milliseconds: 250),
-                                              margin:
-                                                  const EdgeInsets.symmetric(
-                                                      horizontal: 3),
-                                              height: 8,
-                                              width: _page == i ? 20 : 8,
-                                              decoration: BoxDecoration(
-                                                color: _page == i
-                                                    ? _CapColors.gold
-                                                    : Colors.white24,
-                                                borderRadius:
-                                                    BorderRadius.circular(10),
-                                              ),
-                                            ),
-                                          ),
-                                        ),
-                                      ),
-                                    ],
-                                  ),
-                  ),
+                child: LayoutBuilder(
+                  builder: (context, constraints) {
+                    final media = MediaQuery.of(context).size;
+                    final maxHeight = media.height *
+                        (media.width > media.height ? 0.7 : 0.55);
+                    final aspect = _currentAspectRatio();
+                    final targetHeight = (_loadingCursos || _cursoUrls.isEmpty)
+                        ? 220.0
+                        : (constraints.maxWidth / aspect)
+                            .clamp(200.0, maxHeight);
+                    return ClipRRect(
+                      borderRadius: BorderRadius.circular(16),
+                      child: AnimatedContainer(
+                        duration: const Duration(milliseconds: 250),
+                        curve: Curves.easeInOut,
+                        height: targetHeight,
+                        color: _CapColors.surface,
+                        child: _buildCarouselBody(),
+                      ),
+                    );
+                  },
                 ),
               ),
 
@@ -629,6 +529,96 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 }
+
+  // Render del carrusel con límites dinámicos para evitar overflow.
+  Widget _buildCarouselBody() {
+    if (_loadingCursos) {
+      return const HomeModuleSkeleton();
+    }
+    if (_errorCursos != null) {
+      return Center(
+        child: Padding(
+          padding: const EdgeInsets.all(12.0),
+          child: Text(
+            _errorCursos!,
+            textAlign: TextAlign.center,
+            style: const TextStyle(color: _CapColors.textMuted),
+          ),
+        ),
+      );
+    }
+    if (_cursoUrls.isEmpty) {
+      return const Center(
+        child: Text(
+          'Aún no hay cursos publicados.',
+          style: TextStyle(color: _CapColors.textMuted),
+        ),
+      );
+    }
+
+    return Stack(
+      alignment: Alignment.bottomCenter,
+      children: [
+        PageView.builder(
+          controller: _pageCtrl,
+          itemCount: _cursoUrls.length,
+          onPageChanged: (i) => setState(() => _page = i),
+          itemBuilder: (_, i) {
+            final url = _cursoUrls[i];
+            return GestureDetector(
+              onTap: () => _openFullScreen(i),
+              child: Hero(
+                tag: 'curso_$i',
+                child: Container(
+                  color: _CapColors.surfaceAlt,
+                  alignment: Alignment.center,
+                  child: Image.network(
+                    url,
+                    fit: BoxFit.cover,
+                    width: double.infinity,
+                    height: double.infinity,
+                    loadingBuilder: (c, w, p) => p == null
+                        ? w
+                        : const Center(
+                            child: CircularProgressIndicator(
+                              color: _CapColors.gold,
+                            ),
+                          ),
+                    errorBuilder: (_, __, ___) => const Center(
+                      child: Icon(
+                        Icons.image_not_supported_outlined,
+                        color: Colors.white38,
+                        size: 48,
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            );
+          },
+        ),
+        Positioned(
+          bottom: 10,
+          child: Row(
+            children: List.generate(
+              _cursoUrls.length,
+              (i) => AnimatedContainer(
+                duration: const Duration(milliseconds: 250),
+                margin: const EdgeInsets.symmetric(horizontal: 3),
+                height: 8,
+                width: _page == i ? 20 : 8,
+                decoration: BoxDecoration(
+                  color:
+                      _page == i ? _CapColors.gold : Colors.white24,
+                  borderRadius: BorderRadius.circular(10),
+                ),
+              ),
+            ),
+          ),
+        ),
+      ],
+    );
+  }
 
 // ---------- Widgets auxiliares ----------
 
