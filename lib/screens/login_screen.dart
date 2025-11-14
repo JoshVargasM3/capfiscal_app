@@ -519,6 +519,9 @@ class _LoginScreenState extends State<LoginScreen> {
                                         _isLogin = !_isLogin;
                                         _activateNow = false;
                                         _paymentMethod.clear();
+                                        _name.clear();
+                                        _phone.clear();
+                                        _city.clear();
                                       }),
                               child: Text(
                                 _isLogin

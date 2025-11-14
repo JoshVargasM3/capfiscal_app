@@ -31,6 +31,11 @@ class SubscriptionStatus {
     this.paymentMethod,
     this.statusOverride,
     this.updatedAt,
+    this.cancelAtPeriodEnd = false,
+    this.cancelsAt,
+    this.stripeSubscriptionId,
+    this.stripeCustomerId,
+    this.paymentMethods = const <StoredPaymentMethod>[],
     DateTime? checkedAt,
     Map<String, dynamic>? raw,
   })  : checkedAt = checkedAt ?? DateTime.now().toUtc(),
@@ -47,6 +52,21 @@ class SubscriptionStatus {
 
   /// Stored payment method descriptor (Stripe, transfer, etc.).
   final String? paymentMethod;
+
+  /// Whether a cancellation at period end is scheduled.
+  final bool cancelAtPeriodEnd;
+
+  /// When the access should be revoked if cancellation is scheduled.
+  final DateTime? cancelsAt;
+
+  /// Stripe subscription identifier (if backend stores it).
+  final String? stripeSubscriptionId;
+
+  /// Stripe customer identifier (if backend stores it).
+  final String? stripeCustomerId;
+
+  /// Known payment methods retrieved from Firestore.
+  final List<StoredPaymentMethod> paymentMethods;
 
   /// Manual override value stored in Firestore (`subscription.status`).
   final String? statusOverride;
@@ -81,6 +101,33 @@ class SubscriptionStatus {
       paymentMethod: _parseString(sub['paymentMethod']),
       statusOverride: _parseString(sub['status']),
       updatedAt: _parseDate(sub['updatedAt']) ?? _parseDate(data?['updatedAt']),
+      cancelAtPeriodEnd: (sub['cancelAtPeriodEnd'] as bool?) ?? false,
+      cancelsAt: _parseDate(sub['cancelsAt'] ?? sub['cancelScheduledAt']),
+      stripeSubscriptionId: _parseString(sub['stripeSubscriptionId']),
+      stripeCustomerId: _parseString(sub['stripeCustomerId']),
+      paymentMethods:
+          _parsePaymentMethods(sub['paymentMethods'] as List<dynamic>?),
+      raw: sub,
+    );
+  }
+
+  /// Builds a status from an already loaded user document map.
+  factory SubscriptionStatus.fromUserData(Map<String, dynamic> data) {
+    final sub = (data['subscription'] as Map<String, dynamic>?) ??
+        <String, dynamic>{};
+    return SubscriptionStatus(
+      startDate: _parseDate(sub['startDate']),
+      endDate: _parseDate(sub['endDate']),
+      graceEndsAt: _parseDate(sub['graceEndsAt'] ?? sub['graceEndDate']),
+      paymentMethod: _parseString(sub['paymentMethod']),
+      statusOverride: _parseString(sub['status']),
+      updatedAt: _parseDate(sub['updatedAt']) ?? _parseDate(data['updatedAt']),
+      cancelAtPeriodEnd: (sub['cancelAtPeriodEnd'] as bool?) ?? false,
+      cancelsAt: _parseDate(sub['cancelsAt'] ?? sub['cancelScheduledAt']),
+      stripeSubscriptionId: _parseString(sub['stripeSubscriptionId']),
+      stripeCustomerId: _parseString(sub['stripeCustomerId']),
+      paymentMethods:
+          _parsePaymentMethods(sub['paymentMethods'] as List<dynamic>?),
       raw: sub,
     );
   }
@@ -105,6 +152,19 @@ class SubscriptionStatus {
   /// Manual switch to grant access without validating dates.
   bool get isManuallyActive =>
       _statusLower == 'manual_active' || _statusLower == 'active';
+
+  /// Whether there is an upcoming cancellation that should be shown to the user.
+  bool get isCancellationScheduled =>
+      cancelAtPeriodEnd ||
+      (cancelsAt != null && cancelsAt!.isAfter(DateTime.now().toUtc()));
+
+  /// Convenience accessor for the default payment method object.
+  StoredPaymentMethod? get primaryPaymentMethod {
+    if (paymentMethods.isEmpty) return null;
+    final preferred = paymentMethods
+        .firstWhere((m) => m.isDefault, orElse: () => paymentMethods.first);
+    return preferred;
+  }
 
   /// Current subscription state taking overrides and dates into account.
   SubscriptionState get state {
@@ -142,6 +202,10 @@ class SubscriptionStatus {
     return endDate;
   }
 
+  /// Human readable moment when the cancellation will take effect.
+  DateTime? get cancellationEffectiveDate =>
+      cancelsAt ?? accessValidUntil;
+
   /// Whether the subscription is currently valid.
   bool get isActive =>
       endDate != null && endDate!.isAfter(DateTime.now().toUtc());
@@ -172,6 +236,11 @@ class SubscriptionStatus {
         other.endDate == endDate &&
         other.graceEndsAt == graceEndsAt &&
         other.paymentMethod == paymentMethod &&
+        other.cancelAtPeriodEnd == cancelAtPeriodEnd &&
+        other.cancelsAt == cancelsAt &&
+        other.stripeSubscriptionId == stripeSubscriptionId &&
+        other.stripeCustomerId == stripeCustomerId &&
+        _listEquals(other.paymentMethods, paymentMethods) &&
         other.statusOverride == statusOverride &&
         other.updatedAt == updatedAt;
   }
@@ -182,9 +251,84 @@ class SubscriptionStatus {
         endDate,
         graceEndsAt,
         paymentMethod,
+        cancelAtPeriodEnd,
+        cancelsAt,
+        stripeSubscriptionId,
+        stripeCustomerId,
+        Object.hashAll(paymentMethods),
         statusOverride,
         updatedAt,
       );
+}
+
+bool _listEquals<T>(List<T> a, List<T> b) {
+  if (identical(a, b)) return true;
+  if (a.length != b.length) return false;
+  for (int i = 0; i < a.length; i++) {
+    if (a[i] != b[i]) return false;
+  }
+  return true;
+}
+
+class StoredPaymentMethod {
+  const StoredPaymentMethod({
+    required this.id,
+    required this.label,
+    required this.brand,
+    required this.last4,
+    required this.isDefault,
+    this.createdAt,
+  });
+
+  final String id;
+  final String label;
+  final String brand;
+  final String last4;
+  final bool isDefault;
+  final DateTime? createdAt;
+
+  factory StoredPaymentMethod.fromMap(Map<String, dynamic> data) {
+    return StoredPaymentMethod(
+      id: _parseString(data['id']) ?? _parseString(data['label']) ?? '',
+      label: _parseString(data['label']) ?? 'Método de pago',
+      brand: _parseString(data['brand']) ?? 'tarjeta',
+      last4: _parseString(data['last4']) ?? '----',
+      isDefault: (data['isDefault'] as bool?) ?? false,
+      createdAt: _parseDate(data['createdAt']) ?? DateTime.now().toUtc(),
+    );
+  }
+
+  Map<String, dynamic> toMap() => <String, dynamic>{
+        'id': id,
+        'label': label,
+        'brand': brand,
+        'last4': last4,
+        'isDefault': isDefault,
+        'createdAt': createdAt?.toIso8601String(),
+      };
+
+  StoredPaymentMethod copyWith({bool? isDefault}) => StoredPaymentMethod(
+        id: id,
+        label: label,
+        brand: brand,
+        last4: last4,
+        isDefault: isDefault ?? this.isDefault,
+        createdAt: createdAt,
+      );
+
+  @override
+  bool operator ==(Object other) {
+    if (identical(this, other)) return true;
+    if (other is! StoredPaymentMethod) return false;
+    return other.id == id &&
+        other.label == label &&
+        other.brand == brand &&
+        other.last4 == last4 &&
+        other.isDefault == isDefault;
+  }
+
+  @override
+  int get hashCode => Object.hash(id, label, brand, last4, isDefault);
 }
 
 /// Centralised helper to interact with the subscription metadata stored in
@@ -247,6 +391,7 @@ class SubscriptionService {
       endDate: end,
       paymentMethod: paymentMethod,
       status: 'active', // valores permitidos por tus reglas
+      cancelAtPeriodEnd: false,
     );
   }
 
@@ -266,6 +411,7 @@ class SubscriptionService {
       endDate: end,
       paymentMethod: paymentMethod,
       status: 'pending',
+      cancelAtPeriodEnd: false,
     );
   }
 
@@ -277,6 +423,11 @@ class SubscriptionService {
     DateTime? graceEndsAt,
     String? paymentMethod,
     String? status,
+    bool? cancelAtPeriodEnd,
+    DateTime? cancelsAt,
+    List<StoredPaymentMethod>? paymentMethods,
+    String? stripeSubscriptionId,
+    String? stripeCustomerId,
   }) async {
     final updates = <String, Object?>{};
 
@@ -309,6 +460,35 @@ class SubscriptionService {
       updates['subscription.status'] = status;
     } else {
       updates['subscription.status'] = FieldValue.delete();
+    }
+
+    if (cancelAtPeriodEnd != null) {
+      updates['subscription.cancelAtPeriodEnd'] = cancelAtPeriodEnd;
+    }
+
+    if (cancelsAt != null) {
+      updates['subscription.cancelsAt'] =
+          Timestamp.fromDate(cancelsAt.toUtc());
+    } else if (cancelAtPeriodEnd == false) {
+      updates['subscription.cancelsAt'] = FieldValue.delete();
+    }
+
+    if (paymentMethods != null) {
+      updates['subscription.paymentMethods'] =
+          paymentMethods.map((m) => m.toMap()).toList();
+    }
+
+    if (stripeSubscriptionId != null) {
+      updates['subscription.stripeSubscriptionId'] =
+          stripeSubscriptionId.isEmpty
+              ? FieldValue.delete()
+              : stripeSubscriptionId;
+    }
+
+    if (stripeCustomerId != null) {
+      updates['subscription.stripeCustomerId'] = stripeCustomerId.isEmpty
+          ? FieldValue.delete()
+          : stripeCustomerId;
     }
 
     // Estos dos timestamps cumplen tu regla de "solo subscription y/o updatedAt".
@@ -344,4 +524,12 @@ String? _parseString(dynamic value) {
   if (value == null) return null;
   if (value is String) return value;
   return value.toString();
+}
+
+List<StoredPaymentMethod> _parsePaymentMethods(List<dynamic>? raw) {
+  if (raw == null || raw.isEmpty) return const <StoredPaymentMethod>[];
+  return raw
+      .whereType<Map<String, dynamic>>()
+      .map(StoredPaymentMethod.fromMap)
+      .toList();
 }
