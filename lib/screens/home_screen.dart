@@ -10,7 +10,12 @@ import '../widgets/app_bottom_nav.dart';
 import '../widgets/loading_skeleton.dart';
 
 class HomeScreen extends StatefulWidget {
-  const HomeScreen({super.key});
+  const HomeScreen({
+    super.key,
+    this.storage,
+  });
+
+  final FirebaseStorage? storage;
 
   @override
   State<HomeScreen> createState() => _HomeScreenState();
@@ -93,7 +98,7 @@ class _HomeScreenState extends State<HomeScreen> {
   int _page = 0;
   Timer? _autoTimer;
 
-  final _storage = FirebaseStorage.instance;
+  late final FirebaseStorage _storage;
   bool _loadingCursos = true;
   List<Reference> _cursoRefs = [];
   List<String> _cursoUrls = [];
@@ -180,6 +185,7 @@ class _HomeScreenState extends State<HomeScreen> {
   @override
   void initState() {
     super.initState();
+    _storage = widget.storage ?? FirebaseStorage.instance;
     _loadCursos();
   }
 

@@ -30,7 +30,14 @@ class _CapColors {
 }
 
 class BibliotecaLegalScreen extends StatefulWidget {
-  const BibliotecaLegalScreen({super.key});
+  const BibliotecaLegalScreen({
+    super.key,
+    this.storage,
+    this.auth,
+  });
+
+  final FirebaseStorage? storage;
+  final FirebaseAuth? auth;
 
   @override
   State<BibliotecaLegalScreen> createState() => _BibliotecaLegalScreenState();
@@ -38,8 +45,8 @@ class BibliotecaLegalScreen extends StatefulWidget {
 
 class _BibliotecaLegalScreenState extends State<BibliotecaLegalScreen> {
   final GlobalKey<ScaffoldState> _scaffoldKey = GlobalKey<ScaffoldState>();
-  final FirebaseStorage _storage = FirebaseStorage.instance;
-  final FirebaseAuth _auth = FirebaseAuth.instance;
+  late final FirebaseStorage _storage;
+  late final FirebaseAuth _auth;
 
   List<Reference> _files = [];
   bool _loading = true;
@@ -65,6 +72,8 @@ class _BibliotecaLegalScreenState extends State<BibliotecaLegalScreen> {
   @override
   void initState() {
     super.initState();
+    _storage = widget.storage ?? FirebaseStorage.instance;
+    _auth = widget.auth ?? FirebaseAuth.instance;
     _fetchFiles();
   }
 

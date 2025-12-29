@@ -45,8 +45,6 @@ class _SubscriptionRequiredScreenState extends State<SubscriptionRequiredScreen>
       SubscriptionPaymentService.instance;
 
   // ====== Stripe PaymentSheet config ======
-  static const String _fnInitPaymentUrl =
-      'https://us-central1-capfiscal-biblioteca-app.cloudfunctions.net/stripePaymentIntentRequest';
   static const int _planPriceCents = 19900; // $199.00 MXN
 
   static const _bgTop = Color(0xFF0A0A0B);
@@ -269,8 +267,15 @@ class _SubscriptionRequiredScreenState extends State<SubscriptionRequiredScreen>
       final email = user.email ?? '${user.uid}@capfiscal.local';
 
       // 1) Llamar a tu Cloud Function (HTTP)
+      final paymentUrl = SubscriptionConfig.stripePaymentIntentUrl;
+      if (paymentUrl.isEmpty) {
+        throw StateError(
+          'Configura STRIPE_PAYMENT_INTENT_URL para iniciar el pago.',
+        );
+      }
+
       final resp = await http.post(
-        Uri.parse(_fnInitPaymentUrl),
+        Uri.parse(paymentUrl),
         headers: {'Content-Type': 'application/json'},
         body: jsonEncode({
           'amount': _planPriceCents, // centavos
@@ -293,7 +298,7 @@ class _SubscriptionRequiredScreenState extends State<SubscriptionRequiredScreen>
       // 2) Inicializar PaymentSheet
       await Stripe.instance.initPaymentSheet(
         paymentSheetParameters: SetupPaymentSheetParameters(
-          merchantDisplayName: 'CAPFISCAL',
+          merchantDisplayName: SubscriptionConfig.merchantDisplayName,
           paymentIntentClientSecret: data['paymentIntent'] as String,
           customerId: data['customer'] as String,
           customerEphemeralKeySecret: data['ephemeralKey'] as String,
@@ -495,7 +500,7 @@ class _SubscriptionRequiredScreenState extends State<SubscriptionRequiredScreen>
 
     // Móvil: depende de la publishable key (PaymentSheet)
     // Web: depende del Checkout URL
-    final hasMobilePay = SubscriptionConfig.stripePublishableKey.isNotEmpty;
+    final hasMobilePay = SubscriptionConfig.hasPaymentSheetConfiguration;
     final hasWebPay = SubscriptionConfig.hasCheckoutConfiguration;
 
     final showPaymentButton =
@@ -651,7 +656,7 @@ class _SubscriptionRequiredScreenState extends State<SubscriptionRequiredScreen>
                                 child: Text(
                                   kIsWeb
                                       ? 'Configura STRIPE_CHECKOUT_URL para habilitar el botón de pago en Web.'
-                                      : 'Define STRIPE_PUBLISHABLE_KEY para habilitar PaymentSheet en Android/iOS.',
+                                      : 'Define STRIPE_PUBLISHABLE_KEY y STRIPE_PAYMENT_INTENT_URL para habilitar PaymentSheet en Android/iOS.',
                                   style: const TextStyle(
                                     color: Color(0xFFBEBEC6),
                                     fontSize: 13,

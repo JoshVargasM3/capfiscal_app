@@ -35,9 +35,11 @@ Future<void> main() async {
       );
     }
 
-    // 👇 Log de diagnóstico: confirma a qué proyecto apunta el cliente
-    final o = Firebase.app().options;
-    debugPrint('[FIREBASE] projectId=${o.projectId} appId=${o.appId}');
+    if (kDebugMode) {
+      // 👇 Log de diagnóstico: confirma a qué proyecto apunta el cliente
+      final o = Firebase.app().options;
+      debugPrint('[FIREBASE] projectId=${o.projectId} appId=${o.appId}');
+    }
 
     // 🔐 Activa App Check en desarrollo para silenciar los avisos del Storage.
     await _configureFirebaseAppCheck();
@@ -88,10 +90,12 @@ Future<void> _configureFirebaseAppCheck() async {
 Future<void> _configureStripeSdk() async {
   final publishableKey = SubscriptionConfig.stripePublishableKey;
   if (publishableKey.isEmpty) {
-    debugPrint(
-      '[Stripe] STRIPE_PUBLISHABLE_KEY no configurado. '
-      'Ejecuta la app con --dart-define=STRIPE_PUBLISHABLE_KEY=pk_test_...',
-    );
+    if (kDebugMode) {
+      debugPrint(
+        '[Stripe] STRIPE_PUBLISHABLE_KEY no configurado. '
+        'Ejecuta la app con --dart-define=STRIPE_PUBLISHABLE_KEY=pk_test_...',
+      );
+    }
     return;
   }
 
@@ -100,7 +104,9 @@ Future<void> _configureStripeSdk() async {
   try {
     await Stripe.instance.applySettings();
   } catch (err) {
-    debugPrint('[Stripe] No se pudieron aplicar los ajustes: $err');
+    if (kDebugMode) {
+      debugPrint('[Stripe] No se pudieron aplicar los ajustes: $err');
+    }
   }
 
   SubscriptionConfig.debugLog('[Stripe] SDK inicializado');

@@ -5,43 +5,50 @@ import 'package:flutter/foundation.dart';
 class SubscriptionConfig {
   const SubscriptionConfig._();
 
-  /// Intenta leer STRIPE_PUBLISHABLE_KEY desde --dart-define.
-  /// Si está vacío, usamos un fallback de prueba (solo para desarrollo).
-  ///
-  /// >>> RECUERDA: en producción NO dejes llaves en el repo. Usa --dart-define.
-  static const String _envPublishable =
+  /// Clave publicable (Stripe) inyectada por `--dart-define`.
+  static const String stripePublishableKey =
       String.fromEnvironment('STRIPE_PUBLISHABLE_KEY');
-
-  // Clave pública de prueba (fallback). Reemplázala o déjala vacía si lo prefieres.
-  // Valor proporcionado por el usuario:
-  static const String _devFallbackPublishable =
-      'pk_test_51SHsjBCWjByjrRQ6KqxiY0jov0pGv3f2cKWy03CMSdrKitwVFki6ytGRVpWpI1zKM3siN6qKsqAbFkwdSvzcteOR00ni6F5Ipg';
-
-  /// Clave publicable resultante (lee env, si no existe usa fallback).
-  static String get stripePublishableKey =>
-      _envPublishable.isNotEmpty ? _envPublishable : _devFallbackPublishable;
 
   /// (Opcional) Price de Stripe si usas Checkout/Subscriptions.
   static const String stripePriceId = String.fromEnvironment('STRIPE_PRICE_ID');
 
   /// Nombre que ve el usuario en la hoja de pago.
   static const String merchantDisplayName = String.fromEnvironment(
-      'SUBSCRIPTION_MERCHANT_NAME',
-      defaultValue: 'CAPFISCAL');
+    'SUBSCRIPTION_MERCHANT_NAME',
+    defaultValue: 'CAPFISCAL',
+  );
 
   /// URL de Hosted Checkout (para flujo web).
-  static const String stripeCheckoutUrl = String.fromEnvironment(
-    'STRIPE_CHECKOUT_URL',
-    // Puedes cambiar esta URL por tu enlace real:
-    defaultValue: 'https://buy.stripe.com/test_9B6cN425Hgck9Zm7n94Vy00',
-  );
+  static const String stripeCheckoutUrl =
+      String.fromEnvironment('STRIPE_CHECKOUT_URL');
+
+  /// URL HTTP de Cloud Function para crear PaymentIntent (mobile).
+  static const String stripePaymentIntentUrl =
+      String.fromEnvironment('STRIPE_PAYMENT_INTENT_URL');
+
+  /// Package name Android para el enlace de administrar suscripción.
+  static const String androidPackageName =
+      String.fromEnvironment('ANDROID_PACKAGE_NAME');
+
+  /// Bundle id iOS si necesitas formar links específicos.
+  static const String iosBundleId = String.fromEnvironment('IOS_BUNDLE_ID');
 
   /// ¿Tenemos config suficiente para PaymentSheet (móvil)?
   static bool get hasPaymentSheetConfiguration =>
-      stripePublishableKey.isNotEmpty;
+      stripePublishableKey.isNotEmpty && stripePaymentIntentUrl.isNotEmpty;
 
   /// ¿Tenemos config suficiente para Checkout Link (web)?
   static bool get hasCheckoutConfiguration => stripeCheckoutUrl.isNotEmpty;
+
+  /// ¿Tenemos link para administrar suscripción en Play Store?
+  static String get playStoreManageSubscriptionUrl =>
+      androidPackageName.isNotEmpty
+          ? 'https://play.google.com/store/account/subscriptions?package=$androidPackageName'
+          : '';
+
+  /// URL universal para administrar suscripción en iOS.
+  static const String iosManageSubscriptionUrl =
+      'https://apps.apple.com/account/subscriptions';
 
   /// (Histórico) ¿ambas llaves para flujos antiguos?
   static bool get hasStripeConfiguration =>

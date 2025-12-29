@@ -19,12 +19,7 @@ import '../widgets/custom_drawer.dart';
 import '../helpers/favorites_manager.dart';
 import '../helpers/subscription_guard.dart';
 import '../services/subscription_service.dart';
-import '../services/payment_service.dart';
 import '../config/subscription_config.dart';
-
-/// Cloud Function para PaymentIntent (la misma que usas en suscripción)
-const String _kStripeVerifyPaymentUrl =
-    'https://us-central1-capfiscal-biblioteca-app.cloudfunctions.net/stripePaymentIntentRequest';
 
 /// Monto de verificación: $10.00 MXN => 1000 centavos
 const int _kVerifyAmountCents = 1000;
@@ -44,7 +39,18 @@ class _CapColors {
 }
 
 class UserProfileScreen extends StatefulWidget {
-  const UserProfileScreen({super.key});
+  const UserProfileScreen({
+    super.key,
+    this.auth,
+    this.firestore,
+    this.storage,
+    this.subscriptionService,
+  });
+
+  final FirebaseAuth? auth;
+  final FirebaseFirestore? firestore;
+  final FirebaseStorage? storage;
+  final SubscriptionService? subscriptionService;
 
   @override
   State<UserProfileScreen> createState() => _UserProfileScreenState();
@@ -53,12 +59,10 @@ class UserProfileScreen extends StatefulWidget {
 class _UserProfileScreenState extends State<UserProfileScreen> {
   final _scaffoldKey = GlobalKey<ScaffoldState>();
 
-  final _auth = FirebaseAuth.instance;
-  final _db = FirebaseFirestore.instance;
-  final _storage = FirebaseStorage.instance;
-  final SubscriptionService _subscriptionService = SubscriptionService();
-  final SubscriptionPaymentService _paymentService =
-      SubscriptionPaymentService.instance;
+  late final FirebaseAuth _auth;
+  late final FirebaseFirestore _db;
+  late final FirebaseStorage _storage;
+  late final SubscriptionService _subscriptionService;
 
   final _nameCtrl = TextEditingController();
   final _phoneCtrl = TextEditingController();
@@ -92,6 +96,11 @@ class _UserProfileScreenState extends State<UserProfileScreen> {
   @override
   void initState() {
     super.initState();
+    _auth = widget.auth ?? FirebaseAuth.instance;
+    _db = widget.firestore ?? FirebaseFirestore.instance;
+    _storage = widget.storage ?? FirebaseStorage.instance;
+    _subscriptionService = widget.subscriptionService ??
+        SubscriptionService(firestore: _db);
     _loadProfile();
   }
 
@@ -528,23 +537,6 @@ class _UserProfileScreenState extends State<UserProfileScreen> {
 
   // ------- Métodos de pago -------
 
-  String _detectCardBrand(String number) {
-    final digits = number.replaceAll(RegExp(r'\D'), '');
-    if (digits.isEmpty) return 'Tarjeta';
-    switch (digits[0]) {
-      case '4':
-        return 'Visa';
-      case '5':
-        return 'Mastercard';
-      case '3':
-        return 'Amex';
-      case '6':
-        return 'Discover';
-      default:
-        return 'Tarjeta';
-    }
-  }
-
   InputDecoration _dialogFieldDeco(String label) {
     return InputDecoration(
       labelText: label,
@@ -571,9 +563,6 @@ class _UserProfileScreenState extends State<UserProfileScreen> {
 
   Future<void> _addPaymentMethod() async {
     final aliasCtrl = TextEditingController();
-    final numberCtrl = TextEditingController();
-    final expCtrl = TextEditingController();
-    final cvvCtrl = TextEditingController();
     final formKey = GlobalKey<FormState>();
 
     final ok = await showDialog<bool>(
@@ -601,91 +590,10 @@ class _UserProfileScreenState extends State<UserProfileScreen> {
                   style: const TextStyle(color: _CapColors.text),
                   decoration: _dialogFieldDeco('Alias (opcional)'),
                 ),
-                const SizedBox(height: 10),
-                TextFormField(
-                  controller: numberCtrl,
-                  keyboardType: TextInputType.number,
-                  style: const TextStyle(color: _CapColors.text),
-                  decoration:
-                      _dialogFieldDeco('Número de tarjeta (16 dígitos)'),
-                  maxLength: 19,
-                  validator: (v) {
-                    final digits = (v ?? '').replaceAll(RegExp(r'\D'), '');
-                    if (digits.length != 16) {
-                      return 'Debes ingresar 16 dígitos';
-                    }
-                    return null;
-                  },
-                ),
-                const SizedBox(height: 4),
-                Row(
-                  children: [
-                    Expanded(
-                      child: TextFormField(
-                        controller: expCtrl,
-                        keyboardType: TextInputType.number,
-                        style: const TextStyle(color: _CapColors.text),
-                        decoration: _dialogFieldDeco('Vencimiento (MM/AA)'),
-                        maxLength: 5,
-                        onChanged: (value) {
-                          final digits =
-                              value.replaceAll(RegExp(r'[^0-9]'), '');
-                          String formatted = digits;
-                          if (digits.length > 4) {
-                            formatted = digits.substring(0, 4);
-                          }
-                          if (formatted.length >= 3) {
-                            formatted =
-                                '${formatted.substring(0, 2)}/${formatted.substring(2)}';
-                          }
-                          if (formatted != value) {
-                            expCtrl.value = TextEditingValue(
-                              text: formatted,
-                              selection: TextSelection.collapsed(
-                                  offset: formatted.length),
-                            );
-                          }
-                        },
-                        validator: (v) {
-                          final text = (v ?? '').trim();
-                          final regex = RegExp(r'^\d{2}/\d{2}$');
-                          if (!regex.hasMatch(text)) {
-                            return 'Formato MM/AA';
-                          }
-                          final parts = text.split('/');
-                          final mm = int.tryParse(parts[0]) ?? 0;
-                          if (mm < 1 || mm > 12) {
-                            return 'Mes inválido';
-                          }
-                          return null;
-                        },
-                      ),
-                    ),
-                    const SizedBox(width: 10),
-                    Expanded(
-                      child: TextFormField(
-                        controller: cvvCtrl,
-                        keyboardType: TextInputType.number,
-                        style: const TextStyle(color: _CapColors.text),
-                        decoration: _dialogFieldDeco('CVV'),
-                        obscureText: true,
-                        maxLength: 4,
-                        validator: (v) {
-                          final digits =
-                              (v ?? '').replaceAll(RegExp(r'\D'), '');
-                          if (digits.length < 3 || digits.length > 4) {
-                            return 'CVV inválido';
-                          }
-                          return null;
-                        },
-                      ),
-                    ),
-                  ],
-                ),
                 const SizedBox(height: 4),
                 const Text(
-                  'Por seguridad no almacenamos el número completo ni el CVV; '
-                  'solo se guardan alias, marca y últimos 4 dígitos.',
+                  'Para mayor seguridad, la tarjeta se agrega mediante Stripe '
+                  'PaymentSheet. No almacenamos datos sensibles en la app.',
                   style: TextStyle(
                     color: _CapColors.textMuted,
                     fontSize: 11,
@@ -726,33 +634,30 @@ class _UserProfileScreenState extends State<UserProfileScreen> {
     );
 
     if (ok == true) {
-      final rawNumber = numberCtrl.text.replaceAll(RegExp(r'\D'), '');
-      final last4 = rawNumber.substring(rawNumber.length - 4);
-      final brand = _detectCardBrand(rawNumber);
-      final exp = expCtrl.text.trim();
       final alias = aliasCtrl.text.trim();
+      final verified = await _verifyPaymentMethod();
+      if (!verified) {
+        aliasCtrl.dispose();
+        return;
+      }
 
       final label = alias.isNotEmpty
-          ? '$alias · vence $exp'
-          : '$brand terminación $last4 · vence $exp';
+          ? alias
+          : 'Tarjeta verificada';
 
       final newMethod = StoredPaymentMethod(
         id: 'pm_${DateTime.now().millisecondsSinceEpoch}',
         label: label,
-        brand: brand,
-        last4: last4,
+        brand: 'tarjeta',
+        last4: '----',
         isDefault: _paymentMethods.isEmpty,
         createdAt: DateTime.now().toUtc(),
       );
 
       await _savePaymentMethods([..._paymentMethods, newMethod]);
-      await _verifyPaymentMethod(); // verificación de $10
     }
 
     aliasCtrl.dispose();
-    numberCtrl.dispose();
-    expCtrl.dispose();
-    cvvCtrl.dispose();
   }
 
   Future<void> _setPrimaryMethod(StoredPaymentMethod method) async {
@@ -809,24 +714,36 @@ class _UserProfileScreenState extends State<UserProfileScreen> {
   }
 
   /// Verifica el método de pago con Stripe cobrando $10 MXN mediante PaymentSheet.
-  Future<void> _verifyPaymentMethod() async {
+  Future<bool> _verifyPaymentMethod() async {
     // Solo en móvil, como en la pantalla de suscripción
-    if (kIsWeb) return;
+    if (kIsWeb) return false;
 
     // Si Stripe no está configurado, salimos silenciosamente
     if (SubscriptionConfig.stripePublishableKey.isEmpty) {
-      return;
+      return false;
+    }
+
+    final paymentUrl = SubscriptionConfig.stripePaymentIntentUrl;
+    if (paymentUrl.isEmpty) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Configura STRIPE_PAYMENT_INTENT_URL para verificar.'),
+          ),
+        );
+      }
+      return false;
     }
 
     final user = _auth.currentUser;
-    if (user == null) return;
+    if (user == null) return false;
 
     try {
       final email = user.email ?? '${user.uid}@capfiscal.local';
 
       // 1) Llamar a la Cloud Function con monto de verificación de $10 MXN.
       final resp = await http.post(
-        Uri.parse(_kStripeVerifyPaymentUrl),
+        Uri.parse(paymentUrl),
         headers: {'Content-Type': 'application/json'},
         body: jsonEncode({
           'amount': _kVerifyAmountCents, // 1000 centavos = $10 MXN
@@ -852,7 +769,7 @@ class _UserProfileScreenState extends State<UserProfileScreen> {
       // 2) Inicializar PaymentSheet usando SetupPaymentSheetParameters
       await stripe.Stripe.instance.initPaymentSheet(
         paymentSheetParameters: stripe.SetupPaymentSheetParameters(
-          merchantDisplayName: 'CAPFISCAL',
+          merchantDisplayName: SubscriptionConfig.merchantDisplayName,
           paymentIntentClientSecret: data['paymentIntent'] as String,
           customerId: data['customer'] as String,
           customerEphemeralKeySecret: data['ephemeralKey'] as String,
@@ -878,21 +795,24 @@ class _UserProfileScreenState extends State<UserProfileScreen> {
           ),
         ),
       );
+      return true;
     } on stripe.StripeException catch (e) {
-      if (!mounted) return;
+      if (!mounted) return false;
       final msg = e.error.localizedMessage ?? e.error.message ?? e.toString();
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text('Verificación cancelada o fallida: $msg'),
         ),
       );
+      return false;
     } catch (e) {
-      if (!mounted) return;
+      if (!mounted) return false;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text('No pudimos verificar el método de pago: $e'),
         ),
       );
+      return false;
     }
   }
 
@@ -1020,6 +940,48 @@ class _UserProfileScreenState extends State<UserProfileScreen> {
     if (ok == true) {
       await _sendCancellationEmail();
     }
+  }
+
+  Future<void> _openManageSubscription() async {
+    if (kIsWeb) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Administra tu suscripción desde la tienda de tu móvil.'),
+        ),
+      );
+      return;
+    }
+
+    final url = switch (defaultTargetPlatform) {
+      TargetPlatform.iOS => SubscriptionConfig.iosManageSubscriptionUrl,
+      TargetPlatform.android => SubscriptionConfig.playStoreManageSubscriptionUrl,
+      _ => '',
+    };
+
+    if (url.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Configura ANDROID_PACKAGE_NAME para abrir Play Store.'),
+        ),
+      );
+      return;
+    }
+
+    final uri = Uri.parse(url);
+    final ok = await launchUrl(uri, mode: LaunchMode.externalApplication);
+    if (!ok && mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('No se pudo abrir la gestión de pagos.')),
+      );
+    }
+  }
+
+  Future<void> _restoreSubscription() async {
+    await _loadProfile();
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('Estado de suscripción actualizado.')),
+    );
   }
 
   // --------- Acciones de cuenta ---------
@@ -1542,6 +1504,53 @@ class _UserProfileScreenState extends State<UserProfileScreen> {
                               onPressed: _confirmManualCancellation,
                               child: const Text(
                                 'Solicitar cancelación de suscripción',
+                                style: TextStyle(fontWeight: FontWeight.w700),
+                                textAlign: TextAlign.center,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    Padding(
+                      padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+                      child: Row(
+                        children: [
+                          Expanded(
+                            child: OutlinedButton(
+                              style: OutlinedButton.styleFrom(
+                                side: const BorderSide(
+                                    color: _CapColors.goldDark),
+                                foregroundColor: _CapColors.gold,
+                                padding:
+                                    const EdgeInsets.symmetric(vertical: 12),
+                                shape: RoundedRectangleBorder(
+                                  borderRadius: BorderRadius.circular(10),
+                                ),
+                              ),
+                              onPressed: _openManageSubscription,
+                              child: const Text(
+                                'Administrar suscripción',
+                                style: TextStyle(fontWeight: FontWeight.w700),
+                              ),
+                            ),
+                          ),
+                          const SizedBox(width: 12),
+                          Expanded(
+                            child: OutlinedButton(
+                              style: OutlinedButton.styleFrom(
+                                side: const BorderSide(
+                                    color: _CapColors.goldDark),
+                                foregroundColor: _CapColors.gold,
+                                padding:
+                                    const EdgeInsets.symmetric(vertical: 12),
+                                shape: RoundedRectangleBorder(
+                                  borderRadius: BorderRadius.circular(10),
+                                ),
+                              ),
+                              onPressed: _restoreSubscription,
+                              child: const Text(
+                                'Restaurar compra',
                                 style: TextStyle(fontWeight: FontWeight.w700),
                                 textAlign: TextAlign.center,
                               ),

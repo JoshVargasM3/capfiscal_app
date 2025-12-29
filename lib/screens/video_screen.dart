@@ -26,7 +26,16 @@ class _CapColors {
 }
 
 class VideoScreen extends StatefulWidget {
-  const VideoScreen({super.key});
+  const VideoScreen({
+    super.key,
+    this.firestore,
+    this.auth,
+    this.videosStream,
+  });
+
+  final FirebaseFirestore? firestore;
+  final FirebaseAuth? auth;
+  final Stream<QuerySnapshot<Map<String, dynamic>>>? videosStream;
 
   @override
   State<VideoScreen> createState() => _VideoScreenState();
@@ -34,7 +43,8 @@ class VideoScreen extends StatefulWidget {
 
 class _VideoScreenState extends State<VideoScreen> {
   final _scaffoldKey = GlobalKey<ScaffoldState>();
-  final _auth = FirebaseAuth.instance;
+  late final FirebaseAuth _auth;
+  late final FirebaseFirestore _db;
 
   // Búsqueda local
   String _search = '';
@@ -47,10 +57,8 @@ class _VideoScreenState extends State<VideoScreen> {
 
   // ---- Firestore stream ----
   Stream<QuerySnapshot<Map<String, dynamic>>> _videosStream() {
-    return FirebaseFirestore.instance
-        .collection('videos')
-        .orderBy('order', descending: false)
-        .snapshots();
+    return widget.videosStream ??
+        _db.collection('videos').orderBy('order', descending: false).snapshots();
   }
 
   // Normaliza ID de YouTube desde variantes (url, shorts, embed, watch)
@@ -195,6 +203,13 @@ class _VideoScreenState extends State<VideoScreen> {
   @override
   void dispose() {
     super.dispose(); // WebViewController no requiere dispose explícito
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    _auth = widget.auth ?? FirebaseAuth.instance;
+    _db = widget.firestore ?? FirebaseFirestore.instance;
   }
 
   // ---------- UI helpers ----------
