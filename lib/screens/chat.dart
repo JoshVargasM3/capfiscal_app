@@ -1,7 +1,8 @@
 // lib/screens/chat.dart
 import 'package:flutter/material.dart';
-
 import 'package:url_launcher/url_launcher.dart';
+import 'package:firebase_auth/firebase_auth.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
 
 import '../widgets/custom_drawer.dart';
 import '../widgets/app_top_bar.dart';
@@ -123,25 +124,147 @@ class _CapColors {
 class _ChatScreenState extends State<ChatScreen> {
   final _scaffoldKey = GlobalKey<ScaffoldState>();
 
-  final List<ChatMessage> _messages = <ChatMessage>[
-    ChatMessage(
-      author: ChatAuthor.assistant,
-      text:
-          '¡Hola! Soy tu asistente CAPFISCAL. Pregunta por pagos, facturación o cursos y te responderé al instante.',
-      timestamp: DateTime.now(),
-    ),
-  ];
+  /// Historial en memoria (se llena desde Firestore)
+  final List<ChatMessage> _messages = <ChatMessage>[];
 
   final _textCtrl = TextEditingController();
   final _scrollCtrl = ScrollController();
   late final ChatAssistant _assistant;
 
+  final _auth = FirebaseAuth.instance;
+  final _db = FirebaseFirestore.instance;
+
   @override
   void initState() {
     super.initState();
     _assistant = ChatAssistant(faqs: _faqEntries);
+    _loadHistory();
+  }
+
+  // ---------- Persistencia de historial ----------
+
+  Future<void> _loadHistory() async {
+    final user = _auth.currentUser;
+
+    // Si no hay usuario, solo mostramos saludo inicial
+    if (user == null) {
+      if (_messages.isEmpty) {
+        final greeting = ChatMessage(
+          author: ChatAuthor.assistant,
+          text:
+              '¡Hola! Soy tu asistente CAPFISCAL. Pregunta por pagos, facturación o cursos y te responderé al instante.',
+          timestamp: DateTime.now(),
+        );
+        setState(() {
+          _messages.add(greeting);
+        });
+      }
+      WidgetsBinding.instance.addPostFrameCallback((_) => _jumpToEnd());
+      return;
+    }
+
+    try {
+      final snap = await _db
+          .collection('users')
+          .doc(user.uid)
+          .collection('chatMessages')
+          .orderBy('timestamp')
+          .get();
+
+      final loaded = <ChatMessage>[];
+
+      for (final doc in snap.docs) {
+        final data = doc.data();
+        if (data.isEmpty) continue;
+
+        final authorStr = (data['author'] as String?) ?? 'assistant';
+        final author =
+            authorStr == 'user' ? ChatAuthor.user : ChatAuthor.assistant;
+
+        final text = (data['text'] as String?) ?? '';
+        final tsField = data['timestamp'];
+        DateTime? ts;
+        if (tsField is Timestamp) {
+          ts = tsField.toDate();
+        }
+
+        ChatEscalation? esc;
+        final escTopic = data['escalationTopic'] as String?;
+        if (escTopic != null && escTopic.isNotEmpty) {
+          esc = ChatEscalation(
+            topic: escTopic,
+            preferSpecialist:
+                data['escalationPreferSpecialist'] as bool? ?? false,
+          );
+        }
+
+        loaded.add(ChatMessage(
+          author: author,
+          text: text,
+          timestamp: ts,
+          escalation: esc,
+        ));
+      }
+
+      if (!mounted) return;
+
+      setState(() {
+        _messages.clear();
+        if (loaded.isEmpty) {
+          final greeting = ChatMessage(
+            author: ChatAuthor.assistant,
+            text:
+                '¡Hola! Soy tu asistente CAPFISCAL. Pregunta por pagos, facturación o cursos y te responderé al instante.',
+            timestamp: DateTime.now(),
+          );
+          _messages.add(greeting);
+          _persistMessage(greeting);
+        } else {
+          _messages.addAll(loaded);
+        }
+      });
+    } catch (_) {
+      if (!mounted) return;
+      if (_messages.isEmpty) {
+        final greeting = ChatMessage(
+          author: ChatAuthor.assistant,
+          text:
+              '¡Hola! Soy tu asistente CAPFISCAL. Pregunta por pagos, facturación o cursos y te responderé al instante.',
+          timestamp: DateTime.now(),
+        );
+        setState(() {
+          _messages.add(greeting);
+        });
+      }
+    }
+
     WidgetsBinding.instance.addPostFrameCallback((_) => _jumpToEnd());
   }
+
+  Future<void> _persistMessage(ChatMessage msg) async {
+    final user = _auth.currentUser;
+    if (user == null) return;
+
+    try {
+      await _db
+          .collection('users')
+          .doc(user.uid)
+          .collection('chatMessages')
+          .add({
+        'author': msg.author == ChatAuthor.user ? 'user' : 'assistant',
+        'text': msg.text,
+        'timestamp': msg.timestamp != null
+            ? Timestamp.fromDate(msg.timestamp!)
+            : FieldValue.serverTimestamp(),
+        'escalationTopic': msg.escalation?.topic,
+        'escalationPreferSpecialist': msg.escalation?.preferSpecialist ?? false,
+      });
+    } catch (_) {
+      // Si falla el guardado no rompemos la UI
+    }
+  }
+
+  // ---------- Scroll helpers ----------
 
   void _jumpToEnd() {
     if (!_scrollCtrl.hasClients) return;
@@ -157,20 +280,26 @@ class _ChatScreenState extends State<ChatScreen> {
     );
   }
 
+  // ---------- Envío de mensajes ----------
+
   Future<void> _sendMessage() async {
     final txt = _textCtrl.text.trim();
     if (txt.isEmpty) return;
 
+    final now = DateTime.now();
+
     final userMessage = ChatMessage(
       author: ChatAuthor.user,
       text: txt,
-      timestamp: DateTime.now(),
+      timestamp: now,
     );
 
     setState(() {
       _messages.add(userMessage);
       _textCtrl.clear();
     });
+
+    _persistMessage(userMessage);
 
     Future.delayed(const Duration(milliseconds: 80), _animateToEnd);
 
@@ -192,8 +321,11 @@ class _ChatScreenState extends State<ChatScreen> {
     setState(() {
       _messages.add(response);
     });
+    _persistMessage(response);
     Future.delayed(const Duration(milliseconds: 120), _animateToEnd);
   }
+
+  // ---------- Escalación a especialista / correo ----------
 
   Future<void> _openSpecialistSheet(String topic) async {
     final nameCtrl = TextEditingController();
@@ -278,7 +410,8 @@ class _ChatScreenState extends State<ChatScreen> {
       path: 'capfiscal.app@gmail.com',
       queryParameters: {
         'subject': 'Asistencia CAPFISCAL',
-        'body': 'Hola equipo CAPFISCAL, necesito ayuda con:\n$topic\n\nEnviado desde la app.',
+        'body':
+            'Hola equipo CAPFISCAL, necesito ayuda con:\n$topic\n\nEnviado desde la app.',
       },
     );
     try {
@@ -291,7 +424,9 @@ class _ChatScreenState extends State<ChatScreen> {
       } else {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
-              content: Text('No pudimos abrir el correo, escríbenos a capfiscal.app@gmail.com.')),
+            content: Text(
+                'No pudimos abrir el correo, escríbenos a capfiscal.app@gmail.com.'),
+          ),
         );
       }
     } catch (e) {
@@ -336,7 +471,7 @@ class _ChatScreenState extends State<ChatScreen> {
         // Top bar unificado
         appBar: CapfiscalTopBar(
           onMenu: () => _scaffoldKey.currentState?.openDrawer(),
-          onRefresh: () => setState(() {}),
+          onRefresh: () async => _loadHistory(),
           onProfile: () => Navigator.of(context).pushNamed('/perfil'),
         ),
 

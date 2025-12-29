@@ -1,12 +1,25 @@
+// lib/config/subscription_config.dart
 import 'package:flutter/foundation.dart';
 
 /// Config central para los flujos de suscripción de pago.
 class SubscriptionConfig {
   const SubscriptionConfig._();
 
-  /// Clave publicable de Stripe (PaymentSheet móvil).
-  static const String stripePublishableKey =
+  /// Intenta leer STRIPE_PUBLISHABLE_KEY desde --dart-define.
+  /// Si está vacío, usamos un fallback de prueba (solo para desarrollo).
+  ///
+  /// >>> RECUERDA: en producción NO dejes llaves en el repo. Usa --dart-define.
+  static const String _envPublishable =
       String.fromEnvironment('STRIPE_PUBLISHABLE_KEY');
+
+  // Clave pública de prueba (fallback). Reemplázala o déjala vacía si lo prefieres.
+  // Valor proporcionado por el usuario:
+  static const String _devFallbackPublishable =
+      'pk_test_51SHsjBCWjByjrRQ6KqxiY0jov0pGv3f2cKWy03CMSdrKitwVFki6ytGRVpWpI1zKM3siN6qKsqAbFkwdSvzcteOR00ni6F5Ipg';
+
+  /// Clave publicable resultante (lee env, si no existe usa fallback).
+  static String get stripePublishableKey =>
+      _envPublishable.isNotEmpty ? _envPublishable : _devFallbackPublishable;
 
   /// (Opcional) Price de Stripe si usas Checkout/Subscriptions.
   static const String stripePriceId = String.fromEnvironment('STRIPE_PRICE_ID');

@@ -49,21 +49,28 @@ class _HomeScreenState extends State<HomeScreen> {
           mainAxisSize: MainAxisSize.min,
           children: [
             const SizedBox(height: 8),
-            const Text('Buscar en…',
-                style: TextStyle(
-                    fontWeight: FontWeight.bold,
-                    fontSize: 16,
-                    color: _CapColors.text)),
+            const Text(
+              'Buscar en…',
+              style: TextStyle(
+                fontWeight: FontWeight.bold,
+                fontSize: 16,
+                color: _CapColors.text,
+              ),
+            ),
             ListTile(
               leading: const Icon(Icons.menu_book, color: _CapColors.gold),
-              title: const Text('Documentos',
-                  style: TextStyle(color: _CapColors.text)),
+              title: const Text(
+                'Documentos',
+                style: TextStyle(color: _CapColors.text),
+              ),
               onTap: () => Navigator.pop(context, 'docs'),
             ),
             ListTile(
               leading: const Icon(Icons.play_circle, color: _CapColors.gold),
-              title: const Text('Videos',
-                  style: TextStyle(color: _CapColors.text)),
+              title: const Text(
+                'Videos',
+                style: TextStyle(color: _CapColors.text),
+              ),
               onTap: () => Navigator.pop(context, 'videos'),
             ),
             const SizedBox(height: 12),
@@ -137,18 +144,21 @@ class _HomeScreenState extends State<HomeScreen> {
   void _prefetchAspectRatios() {
     for (int i = 0; i < _cursoUrls.length; i++) {
       final imageProvider = Image.network(_cursoUrls[i]).image;
-      final listener = ImageStreamListener((ImageInfo info, bool _) {
-        final w = info.image.width.toDouble();
-        final h = info.image.height.toDouble();
-        if (w > 0 && h > 0) {
-          final ratio = w / h;
-          if (mounted) {
-            setState(() {
-              _cursoAspect[i] = ratio;
-            });
+      final listener = ImageStreamListener(
+        (ImageInfo info, bool _) {
+          final w = info.image.width.toDouble();
+          final h = info.image.height.toDouble();
+          if (w > 0 && h > 0) {
+            final ratio = w / h;
+            if (mounted) {
+              setState(() {
+                _cursoAspect[i] = ratio;
+              });
+            }
           }
-        }
-      }, onError: (dynamic _, __) {});
+        },
+        onError: (dynamic _, __) {},
+      );
       imageProvider.resolve(const ImageConfiguration()).addListener(listener);
     }
   }
@@ -247,8 +257,11 @@ class _HomeScreenState extends State<HomeScreen> {
                     style: IconButton.styleFrom(
                       backgroundColor: Colors.black54,
                     ),
-                    icon:
-                        const Icon(Icons.close, color: Colors.white, size: 26),
+                    icon: const Icon(
+                      Icons.close,
+                      color: Colors.white,
+                      size: 26,
+                    ),
                     onPressed: () => Navigator.of(context).maybePop(),
                   ),
                 ),
@@ -271,6 +284,7 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
+  // -------- UI PRINCIPAL ----------
   @override
   Widget build(BuildContext context) {
     final titleStyle = Theme.of(context).textTheme.headlineSmall?.copyWith(
@@ -292,13 +306,11 @@ class _HomeScreenState extends State<HomeScreen> {
         key: _scaffoldKey,
         backgroundColor: Colors.transparent,
         drawer: const CustomDrawer(),
-
         appBar: CapfiscalTopBar(
           onMenu: () => _scaffoldKey.currentState?.openDrawer(),
           onRefresh: _loadCursos,
           onProfile: () => Navigator.of(context).pushNamed('/perfil'),
         ),
-
         body: SafeArea(
           top: false,
           child: ListView(
@@ -333,7 +345,9 @@ class _HomeScreenState extends State<HomeScreen> {
                             isDense: true,
                             border: InputBorder.none,
                             hintText: 'Buscar en la app...',
-                            hintStyle: TextStyle(color: _CapColors.textMuted),
+                            hintStyle: TextStyle(
+                              color: _CapColors.textMuted,
+                            ),
                           ),
                         ),
                       ),
@@ -357,8 +371,11 @@ class _HomeScreenState extends State<HomeScreen> {
                               ),
                             ],
                           ),
-                          child: const Icon(Icons.search,
-                              size: 18, color: Colors.black),
+                          child: const Icon(
+                            Icons.search,
+                            size: 18,
+                            color: Colors.black,
+                          ),
                         ),
                       ),
                     ],
@@ -382,7 +399,7 @@ class _HomeScreenState extends State<HomeScreen> {
                 ),
               ),
 
-              // Carrusel responsive (rellena contenedor)
+              // Carrusel responsive
               Padding(
                 padding: const EdgeInsets.symmetric(horizontal: 12),
                 child: LayoutBuilder(
@@ -422,7 +439,9 @@ class _HomeScreenState extends State<HomeScreen> {
                       icon: Icons.description_rounded,
                       label: 'Documentos',
                       onTap: () => Navigator.pushReplacementNamed(
-                          context, '/biblioteca'),
+                        context,
+                        '/biblioteca',
+                      ),
                     ),
                     const SizedBox(width: 12),
                     _CategoryButton(
@@ -465,35 +484,40 @@ class _HomeScreenState extends State<HomeScreen> {
                       icon: Icons.music_note, // TikTok
                       label: '@capfiscal.corporativo',
                       onTap: () => _openUrl(
-                          'https://www.tiktok.com/@capfiscal.corporativo'),
+                        'https://www.tiktok.com/@capfiscal.corporativo',
+                      ),
                     ),
                     _SocialChip(
                       color: Colors.red,
                       icon: Icons.ondemand_video, // YouTube
                       label: '@CapFiscalMéxico',
                       onTap: () => _openUrl(
-                          'https://www.youtube.com/@CapFiscalM%C3%A9xico'),
+                        'https://www.youtube.com/@CapFiscalM%C3%A9xico',
+                      ),
                     ),
                     _SocialChip(
                       color: Colors.green,
                       icon: Icons.podcasts, // Spotify/Podcast
                       label: 'Capfiscal Sin Filtro',
                       onTap: () => _openUrl(
-                          'https://open.spotify.com/show/7maJrFMnD8uyUfZkt1d5Xh?si=94736585551e4549'),
+                        'https://open.spotify.com/show/7maJrFMnD8uyUfZkt1d5Xh?si=94736585551e4549',
+                      ),
                     ),
                     _SocialChip(
                       color: Colors.purple,
                       icon: Icons.camera_alt, // Instagram
                       label: '@capfiscal.corporativo',
                       onTap: () => _openUrl(
-                          'https://www.instagram.com/capfiscal.corporativo/?next=%2F'),
+                        'https://www.instagram.com/capfiscal.corporativo/?next=%2F',
+                      ),
                     ),
                     _SocialChip(
                       color: Colors.blue,
                       icon: Icons.facebook, // Facebook
                       label: 'Capfiscal Corporativo',
                       onTap: () => _openUrl(
-                          'https://www.facebook.com/CapFiscalCorporativo/'),
+                        'https://www.facebook.com/CapFiscalCorporativo/',
+                      ),
                     ),
                   ],
                 ),
@@ -528,12 +552,17 @@ class _HomeScreenState extends State<HomeScreen> {
       ),
     );
   }
-}
 
   // Render del carrusel con límites dinámicos para evitar overflow.
   Widget _buildCarouselBody() {
     if (_loadingCursos) {
-      return const HomeModuleSkeleton();
+      // 🔧 Envuelto en scroll para evitar overflow del Column interno
+      return const Padding(
+        padding: EdgeInsets.all(8.0),
+        child: SingleChildScrollView(
+          child: HomeModuleSkeleton(),
+        ),
+      );
     }
     if (_errorCursos != null) {
       return Center(
@@ -608,8 +637,7 @@ class _HomeScreenState extends State<HomeScreen> {
                 height: 8,
                 width: _page == i ? 20 : 8,
                 decoration: BoxDecoration(
-                  color:
-                      _page == i ? _CapColors.gold : Colors.white24,
+                  color: _page == i ? _CapColors.gold : Colors.white24,
                   borderRadius: BorderRadius.circular(10),
                 ),
               ),
@@ -619,6 +647,7 @@ class _HomeScreenState extends State<HomeScreen> {
       ],
     );
   }
+}
 
 // ---------- Widgets auxiliares ----------
 

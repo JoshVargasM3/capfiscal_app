@@ -32,62 +32,67 @@ class _LoginScreenState extends State<LoginScreen> {
 
   final _email = TextEditingController();
   final _pass = TextEditingController();
-  final _paymentMethod = TextEditingController();
+
+  // NUEVOS: campos de perfil para crear la cuenta
+  final _name = TextEditingController();
+  final _phone = TextEditingController();
+  final _city = TextEditingController();
+
   final _formKey = GlobalKey<FormState>();
 
   bool _loading = false;
   bool _isLogin = true;
   bool _obscure = true;
-  bool _activateNow = false;
 
   @override
   void dispose() {
     _email.dispose();
     _pass.dispose();
-    _paymentMethod.dispose();
+    _name.dispose();
+    _phone.dispose();
+    _city.dispose();
     super.dispose();
   }
 
   Future<void> _ensureUserDoc(
     User user, {
-    String? paymentMethod,
-    bool activateImmediately = false,
+    String? name,
+    String? phone,
+    String? city,
   }) async {
     final ref = _db.collection('users').doc(user.uid);
     final snap = await ref.get();
-    final trimmedMethod =
-        paymentMethod != null && paymentMethod.trim().isNotEmpty
-            ? paymentMethod.trim()
-            : null;
-    final now = DateTime.now().toUtc();
-    final startDate = activateImmediately ? Timestamp.fromDate(now) : null;
-    final endDate = activateImmediately
-        ? Timestamp.fromDate(now.add(const Duration(days: 30)))
-        : null;
-    final accountStatus = activateImmediately ? 'manual_active' : 'inactive';
+
+    final regName = name?.trim();
+    final regPhone = phone?.trim();
+    final regCity = city?.trim();
 
     if (!snap.exists) {
+      // Nuevo usuario: crear doc base con suscripción inactiva
       await ref.set({
-        'name': user.displayName ?? '',
+        'name': (regName != null && regName.isNotEmpty)
+            ? regName
+            : (user.displayName ?? ''),
         'email': user.email ?? '',
-        'phone': '',
-        'city': '',
+        'phone': regPhone ?? '',
+        'city': regCity ?? '',
         'photoUrl': user.photoURL,
         'subscription': {
-          'startDate': startDate,
-          'endDate': endDate,
+          'startDate': null,
+          'endDate': null,
           'graceEndsAt': null,
-          'status': accountStatus,
-          'paymentMethod': trimmedMethod,
+          'status': 'inactive',
+          'paymentMethod': null,
           'updatedAt': FieldValue.serverTimestamp(),
         },
-        'status': accountStatus,
+        'status': 'inactive',
         'createdAt': FieldValue.serverTimestamp(),
         'updatedAt': FieldValue.serverTimestamp(),
       });
       return;
     }
 
+    // Usuario existente: solo asegurar campos mínimos sin activar manualmente
     final data = snap.data();
     final sub = (data?['subscription'] as Map<String, dynamic>?) ?? {};
     final updates = <String, Object?>{};
@@ -112,20 +117,8 @@ class _LoginScreenState extends State<LoginScreen> {
       updates['subscription.paymentMethod'] = null;
     }
 
-    if (trimmedMethod != null) {
-      updates['subscription.paymentMethod'] = trimmedMethod;
-    }
-
     if (!(data?.containsKey('status') ?? false)) {
       updates['status'] = 'inactive';
-    }
-
-    if (activateImmediately) {
-      updates['subscription.status'] = 'manual_active';
-      updates['subscription.startDate'] = startDate ?? Timestamp.fromDate(now);
-      updates['subscription.endDate'] =
-          endDate ?? Timestamp.fromDate(now.add(const Duration(days: 30)));
-      updates['status'] = 'manual_active';
     }
 
     if (updates.isNotEmpty) {
@@ -143,33 +136,33 @@ class _LoginScreenState extends State<LoginScreen> {
     try {
       UserCredential cred;
       bool createdAccount = false;
+
       if (_isLogin) {
         cred = await _auth.signInWithEmailAndPassword(
           email: _email.text.trim(),
           password: _pass.text.trim(),
         );
       } else {
-        if (_activateNow && _paymentMethod.text.trim().isEmpty) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-              content:
-                  Text('Agrega un método de pago para activar la suscripción.'),
-            ),
-          );
-          return;
-        }
         cred = await _auth.createUserWithEmailAndPassword(
           email: _email.text.trim(),
           password: _pass.text.trim(),
         );
         createdAccount = true;
+
+        // Guarda también el displayName en Firebase Auth
+        final displayName = _name.text.trim();
+        if (displayName.isNotEmpty) {
+          await cred.user?.updateDisplayName(displayName);
+        }
       }
+
       if (cred.user != null) {
-        final method = _paymentMethod.text.trim();
         await _ensureUserDoc(
           cred.user!,
-          paymentMethod: createdAccount && method.isNotEmpty ? method : null,
-          activateImmediately: createdAccount && _activateNow,
+          // 👉 Datos iniciales de perfil para que aparezcan en UserProfileScreen
+          name: createdAccount ? _name.text.trim() : null,
+          phone: createdAccount ? _phone.text.trim() : null,
+          city: createdAccount ? _city.text.trim() : null,
         );
       }
     } on FirebaseAuthException catch (e) {
@@ -273,7 +266,9 @@ class _LoginScreenState extends State<LoginScreen> {
                     height: 18,
                     width: 18,
                     child: CircularProgressIndicator(
-                        strokeWidth: 2, color: Colors.black),
+                      strokeWidth: 2,
+                      color: Colors.black,
+                    ),
                   )
                 : Text(
                     text,
@@ -310,13 +305,11 @@ class _LoginScreenState extends State<LoginScreen> {
                 child: Column(
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    // ===== Logo responsive (usa assets/capfiscal_logo.png) =====
+                    // ===== Logo responsive =====
                     LayoutBuilder(
                       builder: (context, c) {
-                        // Ancho del logo = 60% del ancho disponible (entre 180 y 420)
                         final w = c.maxWidth.clamp(280.0, 480.0);
                         final logoW = (w * 0.60).clamp(180.0, 420.0);
-                        // Altura en relación aproximada del PNG (ancho:alto ~ 4:1)
                         final logoH = logoW / 4.0;
                         return Padding(
                           padding: const EdgeInsets.only(bottom: 8),
@@ -424,68 +417,71 @@ class _LoginScreenState extends State<LoginScreen> {
                               validator: (v) {
                                 final t = (v ?? '').trim();
                                 if (t.isEmpty) return 'Ingresa tu contraseña';
-                                if (t.length < 6) return 'Mínimo 6 caracteres';
+                                if (t.length < 6) {
+                                  return 'Mínimo 6 caracteres';
+                                }
                                 return null;
                               },
                             ),
 
+                            // ===== Campos extra SOLO en crear cuenta =====
                             if (!_isLogin) ...[
                               const SizedBox(height: 12),
                               TextFormField(
-                                controller: _paymentMethod,
+                                controller: _name,
                                 enabled: !_loading,
                                 style: const TextStyle(color: _CapColors.text),
                                 decoration: _fieldDeco(
-                                  label: 'Método de pago (opcional)',
-                                  icon: Icons.credit_card,
+                                  label: 'Nombre completo',
+                                  icon: Icons.person_outline,
                                 ),
+                                validator: (v) {
+                                  if (_isLogin) return null;
+                                  final t = (v ?? '').trim();
+                                  if (t.isEmpty) {
+                                    return 'Ingresa tu nombre';
+                                  }
+                                  return null;
+                                },
                               ),
-                              const SizedBox(height: 8),
-                              Theme(
-                                data: Theme.of(context).copyWith(
-                                  checkboxTheme: CheckboxThemeData(
-                                    shape: RoundedRectangleBorder(
-                                      borderRadius: BorderRadius.circular(6),
-                                    ),
-                                    fillColor: WidgetStateProperty.resolveWith(
-                                      (states) {
-                                        if (states
-                                            .contains(WidgetState.selected)) {
-                                          return _CapColors.gold;
-                                        }
-                                        return Colors.white38;
-                                      },
-                                    ),
-                                  ),
-                                  unselectedWidgetColor: Colors.white54,
+                              const SizedBox(height: 12),
+                              TextFormField(
+                                controller: _phone,
+                                enabled: !_loading,
+                                keyboardType: TextInputType.phone,
+                                style: const TextStyle(color: _CapColors.text),
+                                decoration: _fieldDeco(
+                                  label: 'Teléfono',
+                                  icon: Icons.phone,
                                 ),
-                                child: CheckboxListTile(
-                                  value: _activateNow,
-                                  onChanged: _loading
-                                      ? null
-                                      : (value) {
-                                          setState(() {
-                                            _activateNow = value ?? false;
-                                          });
-                                        },
-                                  controlAffinity:
-                                      ListTileControlAffinity.leading,
-                                  title: const Text(
-                                    'Activar acceso inmediatamente',
-                                    style: TextStyle(
-                                      color: _CapColors.text,
-                                      fontWeight: FontWeight.w600,
-                                    ),
-                                  ),
-                                  subtitle: const Text(
-                                    'Usa un método manual para pruebas rápidas.',
-                                    style: TextStyle(
-                                      color: _CapColors.textMuted,
-                                      fontSize: 12,
-                                    ),
-                                  ),
-                                ),
+                                validator: (v) {
+                                  if (_isLogin) return null;
+                                  final t = (v ?? '').trim();
+                                  if (t.isEmpty) {
+                                    return 'Ingresa tu teléfono';
+                                  }
+                                  return null;
+                                },
                               ),
+                              const SizedBox(height: 12),
+                              TextFormField(
+                                controller: _city,
+                                enabled: !_loading,
+                                style: const TextStyle(color: _CapColors.text),
+                                decoration: _fieldDeco(
+                                  label: 'Estado / Ciudad',
+                                  icon: Icons.location_city,
+                                ),
+                                validator: (v) {
+                                  if (_isLogin) return null;
+                                  final t = (v ?? '').trim();
+                                  if (t.isEmpty) {
+                                    return 'Ingresa tu estado/ciudad';
+                                  }
+                                  return null;
+                                },
+                              ),
+                              const SizedBox(height: 12),
                             ],
 
                             if (_isLogin) ...[
@@ -517,8 +513,6 @@ class _LoginScreenState extends State<LoginScreen> {
                                   ? null
                                   : () => setState(() {
                                         _isLogin = !_isLogin;
-                                        _activateNow = false;
-                                        _paymentMethod.clear();
                                         _name.clear();
                                         _phone.clear();
                                         _city.clear();
@@ -542,8 +536,10 @@ class _LoginScreenState extends State<LoginScreen> {
                     const Text(
                       'Al continuar aceptas nuestros Términos y Aviso de Privacidad.',
                       textAlign: TextAlign.center,
-                      style:
-                          TextStyle(color: _CapColors.textMuted, fontSize: 11),
+                      style: TextStyle(
+                        color: _CapColors.textMuted,
+                        fontSize: 11,
+                      ),
                     ),
                   ],
                 ),
