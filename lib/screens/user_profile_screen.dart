@@ -1,42 +1,37 @@
 // lib/screens/user_profile_screen.dart
-import 'dart:io';
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
+
+import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_auth/firebase_auth.dart';
+import 'package:firebase_storage/firebase_storage.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
-import 'package:firebase_auth/firebase_auth.dart';
-import 'package:cloud_firestore/cloud_firestore.dart';
-import 'package:firebase_storage/firebase_storage.dart';
-import 'package:image_picker/image_picker.dart';
-import 'package:path_provider/path_provider.dart';
-import 'package:open_filex/open_filex.dart';
-import 'package:url_launcher/url_launcher.dart';
 import 'package:flutter_stripe/flutter_stripe.dart' as stripe;
 import 'package:http/http.dart' as http;
-import '../widgets/app_top_bar.dart';
-import '../widgets/app_bottom_nav.dart';
-import '../widgets/custom_drawer.dart';
+import 'package:image_picker/image_picker.dart';
+import 'package:open_filex/open_filex.dart';
+import 'package:path_provider/path_provider.dart';
+import 'package:url_launcher/url_launcher.dart';
+
+import '../config/subscription_config.dart';
 import '../helpers/favorites_manager.dart';
 import '../helpers/subscription_guard.dart';
+import '../models/fav_video.dart';
 import '../services/subscription_service.dart';
-import '../config/subscription_config.dart';
+import '../theme/cap_colors.dart';
+import '../widgets/app_bottom_nav.dart';
+import '../widgets/app_top_bar.dart';
+import '../widgets/custom_drawer.dart';
+import '../widgets/favorites/doc_tile.dart';
+import '../widgets/favorites/fav_card.dart';
+import '../widgets/favorites/video_tile.dart';
+import '../widgets/profile/profile_field.dart';
+import '../widgets/profile/subscription_row.dart';
 
-/// Monto de verificación: $10.00 MXN => 1000 centavos
+/// (Nota) Ya no se usa aquí porque el backend decide el monto por type.
 const int _kVerifyAmountCents = 1000;
-
-/// 🎨 Paleta CAPFISCAL
-class _CapColors {
-  static const bgTop = Color(0xFF0A0A0B);
-  static const bgMid = Color(0xFF2A2A2F);
-  static const bgBottom = Color(0xFF4A4A50);
-  static const surface = Color(0xFF1C1C21);
-  static const surfaceAlt = Color(0xFF2A2A2F);
-  static const text = Color(0xFFEFEFEF);
-  static const textMuted = Color(0xFFBEBEC6);
-  static const field = Color(0xFF9D9FA3); // gris de campos
-  static const gold = Color(0xFFE1B85C);
-  static const goldDark = Color(0xFFB88F30);
-}
 
 class UserProfileScreen extends StatefulWidget {
   const UserProfileScreen({
@@ -78,7 +73,7 @@ class _UserProfileScreenState extends State<UserProfileScreen> {
   // Favoritos
   bool _loadingFavs = true;
   List<Reference> _favDocs = [];
-  List<_FavVideo> _favVideos = [];
+  List<FavVideo> _favVideos = [];
 
   String? _photoUrl;
 
@@ -99,8 +94,8 @@ class _UserProfileScreenState extends State<UserProfileScreen> {
     _auth = widget.auth ?? FirebaseAuth.instance;
     _db = widget.firestore ?? FirebaseFirestore.instance;
     _storage = widget.storage ?? FirebaseStorage.instance;
-    _subscriptionService = widget.subscriptionService ??
-        SubscriptionService(firestore: _db);
+    _subscriptionService =
+        widget.subscriptionService ?? SubscriptionService(firestore: _db);
     _loadProfile();
   }
 
@@ -113,6 +108,84 @@ class _UserProfileScreenState extends State<UserProfileScreen> {
     super.dispose();
   }
 
+  // ------------------- Helpers StoredPaymentMethod (sin copyWith) -------------------
+
+  StoredPaymentMethod _setDefaultFlag(StoredPaymentMethod m, bool isDefault) {
+    return StoredPaymentMethod(
+      id: m.id,
+      label: m.label,
+      brand: m.brand,
+      last4: m.last4,
+      isDefault: isDefault,
+      createdAt: m.createdAt,
+    );
+  }
+
+  List<StoredPaymentMethod> _sortMethods(List<StoredPaymentMethod> methods) {
+    final copy = List<StoredPaymentMethod>.from(methods);
+    copy.sort((a, b) {
+      if (a.isDefault != b.isDefault) return a.isDefault ? -1 : 1;
+      final ad = a.createdAt ?? DateTime.fromMillisecondsSinceEpoch(0);
+      final bd = b.createdAt ?? DateTime.fromMillisecondsSinceEpoch(0);
+      return bd.compareTo(ad); // más nuevas arriba (después de la principal)
+    });
+    return copy;
+  }
+
+  // ------------------- PaymentMethods: encode/decode -------------------
+
+  List<StoredPaymentMethod> _decodePaymentMethods(dynamic raw) {
+    if (raw is! List) return <StoredPaymentMethod>[];
+
+    final out = <StoredPaymentMethod>[];
+    for (final item in raw) {
+      if (item is Map) {
+        final m = Map<String, dynamic>.from(item);
+        final created = m['createdAt'];
+        DateTime? createdAt;
+        if (created is Timestamp) createdAt = created.toDate();
+        if (created is int) {
+          createdAt = DateTime.fromMillisecondsSinceEpoch(created);
+        }
+        out.add(
+          StoredPaymentMethod(
+            id: (m['id'] ?? '').toString(),
+            label: (m['label'] ?? '').toString(),
+            brand: (m['brand'] ?? '').toString(),
+            last4: (m['last4'] ?? '----').toString(),
+            isDefault: (m['isDefault'] == true),
+            createdAt: createdAt,
+          ),
+        );
+      }
+    }
+
+    // normaliza principal
+    if (out.isNotEmpty && out.every((e) => e.isDefault == false)) {
+      out[0] = _setDefaultFlag(out[0], true);
+    }
+    return _sortMethods(out);
+  }
+
+  List<Map<String, dynamic>> _encodePaymentMethods(
+      List<StoredPaymentMethod> methods) {
+    return methods.map((m) {
+      return <String, dynamic>{
+        'id': m.id,
+        'label': m.label,
+        'brand': m.brand,
+        'last4': m.last4,
+        'isDefault': m.isDefault,
+        if (m.createdAt != null) 'createdAt': Timestamp.fromDate(m.createdAt!),
+      };
+    }).toList();
+  }
+
+  StoredPaymentMethod? _primaryMethod(List<StoredPaymentMethod> methods) {
+    if (methods.isEmpty) return null;
+    return methods.firstWhere((m) => m.isDefault, orElse: () => methods.first);
+  }
+
   // ------------------- DATA -------------------
 
   Future<void> _loadProfile() async {
@@ -120,6 +193,7 @@ class _UserProfileScreenState extends State<UserProfileScreen> {
       _loading = true;
       _loadingFavs = true;
     });
+
     try {
       final user = _auth.currentUser;
       if (user == null) {
@@ -129,8 +203,9 @@ class _UserProfileScreenState extends State<UserProfileScreen> {
         });
         return;
       }
+
       final snap = await _db.collection('users').doc(user.uid).get();
-      final data = snap.data() ?? {};
+      final data = snap.data() ?? <String, dynamic>{};
 
       // createdAt desde Firestore (campo raíz)
       final createdTs = data['createdAt'];
@@ -155,27 +230,43 @@ class _UserProfileScreenState extends State<UserProfileScreen> {
       _subscriptionState = status.state;
       _stripeSubscriptionId = status.stripeSubscriptionId;
       _cancelAtPeriodEnd = status.cancelAtPeriodEnd;
-      _cancelsAt = status.cancellationEffectiveDate;
+
+      // ✅ YA NO existe status.cancellationEffectiveDate en el service nuevo
+      // usamos: cancelsAt -> endDate -> graceEndsAt
+      _cancelsAt = status.cancelsAt ?? status.endDate ?? status.graceEndsAt;
 
       // paymentMethod y lista de métodos
-      final subData = (data['subscription'] as Map<String, dynamic>?) ?? {};
-      _paymentMethod = (status.paymentMethod ??
-              status.primaryPaymentMethod?.label ??
+      final subData = (data['subscription'] is Map)
+          ? Map<String, dynamic>.from(data['subscription'] as Map)
+          : <String, dynamic>{};
+
+      // 1) intenta traer desde SubscriptionStatus
+      var methods = status.paymentMethods;
+
+      // 2) si viene vacío, trae desde Firestore: subscription.paymentMethods
+      if (methods.isEmpty) {
+        methods = _decodePaymentMethods(subData['paymentMethods']);
+      } else {
+        methods = _sortMethods(methods);
+      }
+
+      // 3) paymentMethod legacy (sin primaryPaymentMethod)
+      final legacyPaymentMethod = (status.paymentMethod ??
+              _primaryMethod(status.paymentMethods)?.label ??
               subData['paymentMethod'])
           ?.toString();
 
-      _paymentMethods = status.paymentMethods;
+      _paymentMethod = legacyPaymentMethod;
 
-      // Si no hay lista de métodos pero sí hay paymentMethod inicial,
-      // construimos un método principal para mostrarlo en la UI.
-      if (_paymentMethods.isEmpty &&
-          _paymentMethod != null &&
-          _paymentMethod!.trim().isNotEmpty) {
-        _paymentMethods = [
+      // 4) si aún no hay lista pero hay legacy, crea uno virtual
+      if (methods.isEmpty &&
+          legacyPaymentMethod != null &&
+          legacyPaymentMethod.trim().isNotEmpty) {
+        methods = [
           StoredPaymentMethod(
             id: 'pm_initial',
-            label: _paymentMethod!,
-            brand: _paymentMethod!,
+            label: legacyPaymentMethod,
+            brand: legacyPaymentMethod,
             last4: '----',
             isDefault: true,
             createdAt: _startDate ?? DateTime.now().toUtc(),
@@ -183,8 +274,21 @@ class _UserProfileScreenState extends State<UserProfileScreen> {
         ];
       }
 
+      // normaliza principal y asigna
+      if (methods.isNotEmpty && methods.every((m) => m.isDefault == false)) {
+        methods[0] = _setDefaultFlag(methods[0], true);
+      }
+
+      methods = _sortMethods(methods);
+      _paymentMethods = methods;
+
+      // asegura paymentMethod UI = label del principal si existe
+      final primary = _primaryMethod(_paymentMethods);
+      if (primary != null) _paymentMethod = primary.label;
+
       await _loadFavorites();
     } catch (_) {
+      // silencioso
     } finally {
       if (mounted) setState(() => _loading = false);
     }
@@ -272,7 +376,7 @@ class _UserProfileScreenState extends State<UserProfileScreen> {
       }).toList();
 
       final vSnap = await _db.collection('videos').get();
-      final List<_FavVideo> vids = [];
+      final List<FavVideo> vids = [];
       for (final d in vSnap.docs) {
         final data = d.data();
         final raw = _extractYoutubeRaw(data);
@@ -287,7 +391,7 @@ class _UserProfileScreenState extends State<UserProfileScreen> {
             favSet.contains(title);
 
         if (isFav && RegExp(r'^[a-zA-Z0-9_-]{11}$').hasMatch(id)) {
-          vids.add(_FavVideo(
+          vids.add(FavVideo(
             docId: d.id,
             youtubeId: id,
             title: title.isEmpty ? 'Video' : title,
@@ -414,6 +518,7 @@ class _UserProfileScreenState extends State<UserProfileScreen> {
     try {
       final currentEmail = user.email ?? '';
       final newEmail = _emailCtrl.text.trim();
+
       if (newEmail.isNotEmpty && newEmail != currentEmail) {
         try {
           await user.updateEmail(newEmail);
@@ -434,8 +539,8 @@ class _UserProfileScreenState extends State<UserProfileScreen> {
             if (mounted) {
               ScaffoldMessenger.of(context).showSnackBar(
                 SnackBar(
-                    content:
-                        Text('No se pudo actualizar el correo: ${e.code}')),
+                  content: Text('No se pudo actualizar el correo: ${e.code}'),
+                ),
               );
             }
             if (mounted) setState(() => _saving = false);
@@ -449,6 +554,7 @@ class _UserProfileScreenState extends State<UserProfileScreen> {
         await user.updatePhotoURL(_photoUrl);
       }
 
+      // ✅ FIX: NO tocar subscription aquí (evita borrar fechas o métodos).
       await _db.collection('users').doc(user.uid).set({
         'name': _nameCtrl.text.trim(),
         'phone': _phoneCtrl.text.trim(),
@@ -456,12 +562,6 @@ class _UserProfileScreenState extends State<UserProfileScreen> {
         'city': _cityCtrl.text.trim(),
         'photoUrl': _photoUrl,
         'updatedAt': FieldValue.serverTimestamp(),
-        'subscription': {
-          'startDate':
-              _startDate != null ? Timestamp.fromDate(_startDate!) : null,
-          'endDate': _endDate != null ? Timestamp.fromDate(_endDate!) : null,
-          'paymentMethod': _paymentMethod,
-        }
       }, SetOptions(merge: true));
 
       if (mounted) {
@@ -526,6 +626,7 @@ class _UserProfileScreenState extends State<UserProfileScreen> {
     try {
       await _storage.ref('users/${user.uid}/profile.jpg').delete();
     } catch (_) {}
+
     await _db.collection('users').doc(user.uid).set(
       {'photoUrl': null, 'updatedAt': FieldValue.serverTimestamp()},
       SetOptions(merge: true),
@@ -540,9 +641,9 @@ class _UserProfileScreenState extends State<UserProfileScreen> {
   InputDecoration _dialogFieldDeco(String label) {
     return InputDecoration(
       labelText: label,
-      labelStyle: const TextStyle(color: _CapColors.textMuted, fontSize: 13),
+      labelStyle: const TextStyle(color: CapColors.textMuted, fontSize: 13),
       filled: true,
-      fillColor: _CapColors.surfaceAlt,
+      fillColor: CapColors.surfaceAlt,
       isDense: true,
       contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
       border: OutlineInputBorder(
@@ -555,52 +656,42 @@ class _UserProfileScreenState extends State<UserProfileScreen> {
       ),
       focusedBorder: OutlineInputBorder(
         borderRadius: BorderRadius.circular(10),
-        borderSide: const BorderSide(color: _CapColors.gold),
+        borderSide: const BorderSide(color: CapColors.gold),
       ),
       counterText: '',
     );
   }
 
   Future<void> _addPaymentMethod() async {
+    if (_updatingPaymentMethods) return;
+
     final aliasCtrl = TextEditingController();
-    final formKey = GlobalKey<FormState>();
 
     final ok = await showDialog<bool>(
-      // <-- resto igual
       context: context,
-      barrierDismissible: !_updatingPaymentMethods,
-      builder: (_) => AlertDialog(
-        backgroundColor: _CapColors.surface,
+      barrierDismissible: true,
+      builder: (dialogCtx) => AlertDialog(
+        backgroundColor: CapColors.surface,
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
         title: const Text(
           'Nuevo método de pago',
-          style: TextStyle(
-            color: _CapColors.text,
-            fontWeight: FontWeight.w800,
-          ),
+          style: TextStyle(color: CapColors.text, fontWeight: FontWeight.w800),
         ),
         content: SingleChildScrollView(
-          child: Form(
-            key: formKey,
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                TextFormField(
-                  controller: aliasCtrl,
-                  style: const TextStyle(color: _CapColors.text),
-                  decoration: _dialogFieldDeco('Alias (opcional)'),
-                ),
-                const SizedBox(height: 4),
-                const Text(
-                  'Para mayor seguridad, la tarjeta se agrega mediante Stripe '
-                  'PaymentSheet. No almacenamos datos sensibles en la app.',
-                  style: TextStyle(
-                    color: _CapColors.textMuted,
-                    fontSize: 11,
-                  ),
-                ),
-              ],
-            ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              TextField(
+                controller: aliasCtrl,
+                style: const TextStyle(color: CapColors.text),
+                decoration: _dialogFieldDeco('Alias (opcional)'),
+              ),
+              const SizedBox(height: 8),
+              const Text(
+                'Se abrirá Stripe PaymentSheet para validar la tarjeta con un cargo de 10 MXN.',
+                style: TextStyle(color: CapColors.textMuted, fontSize: 11),
+              ),
+            ],
           ),
         ),
         actionsPadding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
@@ -608,42 +699,42 @@ class _UserProfileScreenState extends State<UserProfileScreen> {
           OutlinedButton(
             style: OutlinedButton.styleFrom(
               side: const BorderSide(color: Colors.white24),
-              foregroundColor: _CapColors.text,
+              foregroundColor: CapColors.text,
               shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(10)),
+                borderRadius: BorderRadius.circular(10),
+              ),
             ),
-            onPressed: () => Navigator.pop(context, false),
+            onPressed: () => Navigator.of(dialogCtx).pop(false),
             child: const Text('Cancelar'),
           ),
           ElevatedButton(
             style: ElevatedButton.styleFrom(
-              backgroundColor: _CapColors.gold,
+              backgroundColor: CapColors.gold,
               foregroundColor: Colors.black,
               shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(10)),
+                borderRadius: BorderRadius.circular(10),
+              ),
             ),
-            onPressed: () {
-              if (formKey.currentState?.validate() ?? false) {
-                Navigator.pop(context, true);
-              }
-            },
-            child: const Text('Guardar'),
+            onPressed: () => Navigator.of(dialogCtx).pop(true),
+            child: const Text('Continuar'),
           ),
         ],
       ),
     );
 
-    if (ok == true) {
-      final alias = aliasCtrl.text.trim();
-      final verified = await _verifyPaymentMethod();
-      if (!verified) {
-        aliasCtrl.dispose();
-        return;
-      }
+    if (ok != true) {
+      aliasCtrl.dispose();
+      return;
+    }
 
-      final label = alias.isNotEmpty
-          ? alias
-          : 'Tarjeta verificada';
+    setState(() => _updatingPaymentMethods = true);
+    try {
+      final alias = aliasCtrl.text.trim();
+
+      final verified = await _verifyPaymentMethod();
+      if (!verified) return;
+
+      final label = alias.isNotEmpty ? alias : 'Tarjeta verificada';
 
       final newMethod = StoredPaymentMethod(
         id: 'pm_${DateTime.now().millisecondsSinceEpoch}',
@@ -655,51 +746,73 @@ class _UserProfileScreenState extends State<UserProfileScreen> {
       );
 
       await _savePaymentMethods([..._paymentMethods, newMethod]);
+    } finally {
+      aliasCtrl.dispose();
+      if (mounted) setState(() => _updatingPaymentMethods = false);
     }
-
-    aliasCtrl.dispose();
   }
 
+  /// ✅ Cambiar tarjeta principal (SIN cobro)
   Future<void> _setPrimaryMethod(StoredPaymentMethod method) async {
+    if (method.isDefault) return;
+
     final updated = _paymentMethods
-        .map((m) => m.copyWith(isDefault: m.id == method.id))
+        .map((m) => _setDefaultFlag(m, m.id == method.id))
         .toList();
+
     await _savePaymentMethods(updated);
-    await _verifyPaymentMethod(); // verificación al cambiar principal
   }
 
   Future<void> _removePaymentMethod(StoredPaymentMethod method) async {
     final updated =
-        _paymentMethods.where((m) => m.id != method.id).toList(growable: false);
+        _paymentMethods.where((m) => m.id != method.id).toList(growable: true);
     if (updated.isNotEmpty && updated.every((m) => m.isDefault == false)) {
-      updated[0] = updated[0].copyWith(isDefault: true);
+      updated[0] = _setDefaultFlag(updated[0], true);
     }
     await _savePaymentMethods(updated);
   }
 
+  /// ✅ Persistir paymentMethods en Firestore (merge)
   Future<void> _savePaymentMethods(List<StoredPaymentMethod> methods) async {
     final uid = _auth.currentUser?.uid;
     if (uid == null) return;
+
     setState(() => _updatingPaymentMethods = true);
     try {
-      await _subscriptionService.updateSubscription(
-        uid,
-        paymentMethods: methods,
-        paymentMethod: methods.isNotEmpty
-            ? methods
-                .firstWhere((m) => m.isDefault, orElse: () => methods.first)
-                .label
-            : null,
-      );
+      // normaliza principal
+      if (methods.isNotEmpty && methods.every((m) => m.isDefault == false)) {
+        methods[0] = _setDefaultFlag(methods[0], true);
+      }
+
+      methods = _sortMethods(methods);
+
+      final primary = _primaryMethod(methods);
+      final primaryLabel = primary?.label;
+
+      await _db.collection('users').doc(uid).set({
+        'subscription': {
+          'paymentMethods': _encodePaymentMethods(methods),
+          'paymentMethod': primaryLabel,
+          'updatedAt': FieldValue.serverTimestamp(),
+        },
+        'updatedAt': FieldValue.serverTimestamp(),
+      }, SetOptions(merge: true));
+
+      // (Opcional) también por service
+      try {
+        await _subscriptionService.updateSubscription(
+          uid,
+          paymentMethods: methods,
+          paymentMethod: primaryLabel,
+        );
+      } catch (_) {}
+
       if (!mounted) return;
       setState(() {
         _paymentMethods = methods;
-        _paymentMethod = methods.isNotEmpty
-            ? methods
-                .firstWhere((m) => m.isDefault, orElse: () => methods.first)
-                .label
-            : null;
+        _paymentMethod = primaryLabel;
       });
+
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Métodos actualizados.')),
       );
@@ -715,20 +828,16 @@ class _UserProfileScreenState extends State<UserProfileScreen> {
 
   /// Verifica el método de pago con Stripe cobrando $10 MXN mediante PaymentSheet.
   Future<bool> _verifyPaymentMethod() async {
-    // Solo en móvil, como en la pantalla de suscripción
     if (kIsWeb) return false;
-
-    // Si Stripe no está configurado, salimos silenciosamente
-    if (SubscriptionConfig.stripePublishableKey.isEmpty) {
-      return false;
-    }
+    if (SubscriptionConfig.stripePublishableKey.isEmpty) return false;
 
     final paymentUrl = SubscriptionConfig.stripePaymentIntentUrl;
     if (paymentUrl.isEmpty) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
-            content: Text('Configura STRIPE_PAYMENT_INTENT_URL para verificar.'),
+            content:
+                Text('Configura STRIPE_PAYMENT_INTENT_URL para verificar.'),
           ),
         );
       }
@@ -740,58 +849,64 @@ class _UserProfileScreenState extends State<UserProfileScreen> {
 
     try {
       final email = user.email ?? '${user.uid}@capfiscal.local';
+      final idToken = await user.getIdToken(true);
 
-      // 1) Llamar a la Cloud Function con monto de verificación de $10 MXN.
       final resp = await http.post(
         Uri.parse(paymentUrl),
-        headers: {'Content-Type': 'application/json'},
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': 'Bearer $idToken',
+        },
         body: jsonEncode({
-          'amount': _kVerifyAmountCents, // 1000 centavos = $10 MXN
+          'type': 'payment_method_verification',
           'currency': 'mxn',
           'email': email,
           'uid': user.uid,
           'description': 'Verificación de método de pago CAPFISCAL',
-          'metadata': {
-            'uid': user.uid,
-            'type': 'payment_method_verification',
-          },
+          'metadata': {'uid': user.uid, 'type': 'payment_method_verification'},
         }),
       );
 
       if (resp.statusCode != 200) {
         throw Exception('Stripe init falló: ${resp.body}');
       }
+
       final data = jsonDecode(resp.body) as Map<String, dynamic>;
       if (data['success'] != true) {
         throw Exception('Stripe init falló: ${data['error']}');
       }
 
-      // 2) Inicializar PaymentSheet usando SetupPaymentSheetParameters
+      final clientSecret = data['paymentIntent'] as String?;
+      final customerId = data['customer'] as String?;
+      final ephemeralKey = data['ephemeralKey'] as String?;
+
+      if (clientSecret == null || customerId == null || ephemeralKey == null) {
+        throw Exception('Respuesta incompleta del servidor (Stripe keys).');
+      }
+
       await stripe.Stripe.instance.initPaymentSheet(
         paymentSheetParameters: stripe.SetupPaymentSheetParameters(
           merchantDisplayName: SubscriptionConfig.merchantDisplayName,
-          paymentIntentClientSecret: data['paymentIntent'] as String,
-          customerId: data['customer'] as String,
-          customerEphemeralKeySecret: data['ephemeralKey'] as String,
+          paymentIntentClientSecret: clientSecret,
+          customerId: customerId,
+          customerEphemeralKeySecret: ephemeralKey,
           allowsDelayedPaymentMethods: true,
         ),
       );
 
-      // 3) Presentar PaymentSheet
       await stripe.Stripe.instance.presentPaymentSheet();
 
-      // 4) Guardar marca de verificación
       await _db.collection('users').doc(user.uid).set({
         'subscription': {
           'lastPaymentVerificationAt': FieldValue.serverTimestamp(),
         }
       }, SetOptions(merge: true));
 
-      if (!mounted) return;
+      if (!mounted) return false;
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
           content: Text(
-            'Método verificado correctamente. Se realizó un cargo de prueba de \$10 MXN.',
+            'Tarjeta verificada. Se realizó un cargo de validación de \$10 MXN.',
           ),
         ),
       );
@@ -800,17 +915,13 @@ class _UserProfileScreenState extends State<UserProfileScreen> {
       if (!mounted) return false;
       final msg = e.error.localizedMessage ?? e.error.message ?? e.toString();
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('Verificación cancelada o fallida: $msg'),
-        ),
+        SnackBar(content: Text('Operación cancelada o fallida: $msg')),
       );
       return false;
     } catch (e) {
       if (!mounted) return false;
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('No pudimos verificar el método de pago: $e'),
-        ),
+        SnackBar(content: Text('No pudimos verificar el método de pago: $e')),
       );
       return false;
     }
@@ -820,69 +931,58 @@ class _UserProfileScreenState extends State<UserProfileScreen> {
 
   Future<void> _sendCancellationEmail() async {
     final user = _auth.currentUser;
-    final email = user?.email ?? _emailCtrl.text.trim();
+    final email = (user?.email ?? _emailCtrl.text.trim()).trim();
     final uid = user?.uid ?? '';
-    final now = DateTime.now();
+    final now = DateTime.now().toLocal();
 
-    final subject = Uri.encodeComponent(
-        'Solicitud de cancelación de suscripción CAPFISCAL');
-    final body = Uri.encodeComponent(
-      'Hola equipo CAPFISCAL,\n\n'
-      'Quiero solicitar la cancelación de mi suscripción a la Biblioteca CAPFISCAL.\n\n'
-      'Datos de la cuenta:\n'
-      '- Correo: $email\n'
-      '- UID: $uid\n'
-      '- Fecha de solicitud: $now\n\n'
-      'Entiendo que la cancelación se realizará manualmente dentro de un plazo '
-      'máximo de 3 días.\n\n'
-      'Gracias.',
+    final bodyText = ''
+        'Hola equipo CAPFISCAL,\n\n'
+        'Quiero solicitar la cancelación de mi suscripción a la Biblioteca CAPFISCAL.\n\n'
+        'Datos de la cuenta:\n'
+        '- Correo: ${email.isEmpty ? 'N/A' : email}\n'
+        '- UID: ${uid.isEmpty ? 'N/A' : uid}\n'
+        '- Fecha de solicitud: ${now.toIso8601String()}\n\n'
+        'Gracias.\n';
+
+    final uri = Uri(
+      scheme: 'mailto',
+      path: 'petmega.redes@gmail.com',
+      queryParameters: {
+        'subject': 'Solicitud de cancelación de suscripción CAPFISCAL',
+        'body': bodyText,
+      },
     );
 
-    final uri =
-        Uri.parse('mailto:petmega.redes@gmail.com?subject=$subject&body=$body');
-
     try {
-      // primero verificamos si hay app de correo disponible
-      final can = await canLaunchUrl(uri);
-      if (!can) {
-        if (!mounted) return;
+      final launched = await launchUrl(
+        uri,
+        mode: LaunchMode.externalApplication,
+      );
+
+      if (!mounted) return;
+
+      if (!launched) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
             content: Text(
-                'No se encontró ninguna app de correo configurada en este dispositivo.'),
+              'No se pudo abrir la app de correo. Verifica que tengas una configurada.',
+            ),
           ),
         );
         return;
       }
 
-      // forzamos abrir la app de correo externa
-      final ok = await launchUrl(
-        uri,
-        mode: LaunchMode.externalApplication,
-      );
-      if (!mounted) return;
-      if (!ok) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content:
-                Text('No se pudo abrir la app de correo en este dispositivo.'),
-          ),
-        );
-      } else {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text(
-                'Abrimos tu app de correo. Envía el mensaje para completar la solicitud.'),
-          ),
-        );
-      }
-    } catch (_) {
-      if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
-          content:
-              Text('Ocurrió un problema al intentar abrir la app de correo.'),
+          content: Text(
+            'Se abrió tu app de correo. Envía el mensaje para completar la solicitud.',
+          ),
         ),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Error al abrir correo: $e')),
       );
     }
   }
@@ -890,47 +990,46 @@ class _UserProfileScreenState extends State<UserProfileScreen> {
   Future<void> _confirmManualCancellation() async {
     final ok = await showDialog<bool>(
       context: context,
-      builder: (_) => AlertDialog(
-        backgroundColor: _CapColors.surface,
+      barrierDismissible: true,
+      builder: (dialogCtx) => AlertDialog(
+        backgroundColor: CapColors.surface,
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
         title: const Text(
           'Solicitar cancelación',
-          style: TextStyle(
-            color: _CapColors.text,
-            fontWeight: FontWeight.w800,
-          ),
+          style: TextStyle(color: CapColors.text, fontWeight: FontWeight.w800),
         ),
         content: const Text(
           'Si solicitas la cancelación de tu suscripción, perderás todos los '
           'beneficios y el acceso a los documentos una vez que el equipo de '
           'CAPFISCAL procese tu solicitud.\n\n'
           'La cancelación se realiza de forma manual en un plazo máximo de 3 días. '
-          'Al continuar, prepararemos un correo dirigido a petmega.redes@gmail.com '
-          'con tus datos para completar el proceso.',
-          style: TextStyle(color: _CapColors.textMuted),
+          'Al continuar, prepararemos un correo con tus datos para completar el proceso.',
+          style: TextStyle(color: CapColors.textMuted),
         ),
         actionsPadding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
         actions: [
           OutlinedButton(
             style: OutlinedButton.styleFrom(
               side: const BorderSide(color: Colors.white24),
-              foregroundColor: _CapColors.text,
+              foregroundColor: CapColors.text,
               padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
               shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(10)),
+                borderRadius: BorderRadius.circular(10),
+              ),
             ),
-            onPressed: () => Navigator.pop(context, false),
+            onPressed: () => Navigator.of(dialogCtx).pop(false),
             child: const Text('Seguir con mi suscripción'),
           ),
           ElevatedButton(
             style: ElevatedButton.styleFrom(
-              backgroundColor: _CapColors.gold,
+              backgroundColor: CapColors.gold,
               foregroundColor: Colors.black,
               padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
               shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(10)),
+                borderRadius: BorderRadius.circular(10),
+              ),
             ),
-            onPressed: () => Navigator.pop(context, true),
+            onPressed: () => Navigator.of(dialogCtx).pop(true),
             child: const Text('Enviar solicitud'),
           ),
         ],
@@ -946,7 +1045,8 @@ class _UserProfileScreenState extends State<UserProfileScreen> {
     if (kIsWeb) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
-          content: Text('Administra tu suscripción desde la tienda de tu móvil.'),
+          content:
+              Text('Administra tu suscripción desde la tienda de tu móvil.'),
         ),
       );
       return;
@@ -954,14 +1054,16 @@ class _UserProfileScreenState extends State<UserProfileScreen> {
 
     final url = switch (defaultTargetPlatform) {
       TargetPlatform.iOS => SubscriptionConfig.iosManageSubscriptionUrl,
-      TargetPlatform.android => SubscriptionConfig.playStoreManageSubscriptionUrl,
+      TargetPlatform.android =>
+        SubscriptionConfig.playStoreManageSubscriptionUrl,
       _ => '',
     };
 
     if (url.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
-          content: Text('Configura ANDROID_PACKAGE_NAME para abrir Play Store.'),
+          content:
+              Text('Configura ANDROID_PACKAGE_NAME para abrir Play Store.'),
         ),
       );
       return;
@@ -985,26 +1087,6 @@ class _UserProfileScreenState extends State<UserProfileScreen> {
   }
 
   // --------- Acciones de cuenta ---------
-
-  Future<void> _sendPasswordReset() async {
-    final email = _auth.currentUser?.email ?? _emailCtrl.text.trim();
-    if (email.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('No hay correo para enviar el reinicio.')),
-      );
-      return;
-    }
-    try {
-      await _auth.sendPasswordResetEmail(email: email);
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Te enviamos un correo a $email')),
-      );
-    } catch (e) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Error al enviar correo: $e')),
-      );
-    }
-  }
 
   Future<void> _sendEmailVerification() async {
     final user = _auth.currentUser;
@@ -1042,33 +1124,38 @@ class _UserProfileScreenState extends State<UserProfileScreen> {
     final ok = await showDialog<bool>(
       context: context,
       builder: (_) => AlertDialog(
-        backgroundColor: _CapColors.surface,
+        backgroundColor: CapColors.surface,
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-        title: const Text('Cerrar sesión',
-            style:
-                TextStyle(color: _CapColors.text, fontWeight: FontWeight.w800)),
-        content: const Text('¿Seguro que deseas cerrar tu sesión?',
-            style: TextStyle(color: _CapColors.textMuted)),
+        title: const Text(
+          'Cerrar sesión',
+          style: TextStyle(color: CapColors.text, fontWeight: FontWeight.w800),
+        ),
+        content: const Text(
+          '¿Seguro que deseas cerrar tu sesión?',
+          style: TextStyle(color: CapColors.textMuted),
+        ),
         actionsPadding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
         actions: [
           OutlinedButton(
             style: OutlinedButton.styleFrom(
               side: const BorderSide(color: Colors.white24),
-              foregroundColor: _CapColors.text,
+              foregroundColor: CapColors.text,
               padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
               shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(10)),
+                borderRadius: BorderRadius.circular(10),
+              ),
             ),
             onPressed: () => Navigator.pop(context, false),
             child: const Text('Cancelar'),
           ),
           ElevatedButton.icon(
             style: ElevatedButton.styleFrom(
-              backgroundColor: _CapColors.gold,
+              backgroundColor: CapColors.gold,
               foregroundColor: Colors.black,
               padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
               shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(10)),
+                borderRadius: BorderRadius.circular(10),
+              ),
             ),
             onPressed: () => Navigator.pop(context, true),
             icon: const Icon(Icons.logout),
@@ -1095,13 +1182,18 @@ class _UserProfileScreenState extends State<UserProfileScreen> {
     final result = await showMenu<String>(
       context: context,
       position: RelativeRect.fromLTRB(
-          position.dx, position.dy, position.dx, position.dy),
+        position.dx,
+        position.dy,
+        position.dx,
+        position.dy,
+      ),
       items: const [
         PopupMenuItem(value: 'view', child: Text('Ver imagen')),
         PopupMenuItem(value: 'change', child: Text('Cambiar imagen')),
         PopupMenuItem(value: 'delete', child: Text('Eliminar imagen')),
       ],
     );
+
     if (result == 'view') {
       if (_photoUrl == null) return;
       showDialog(
@@ -1128,16 +1220,168 @@ class _UserProfileScreenState extends State<UserProfileScreen> {
     return '$dd/$mm/$yy';
   }
 
+  String _methodSubtitle(StoredPaymentMethod m) {
+    final parts = <String>[];
+    final b = m.brand.trim();
+    if (b.isNotEmpty) parts.add(b);
+    final l4 = m.last4.trim();
+    if (l4.isNotEmpty && l4 != '----') parts.add('•••• $l4');
+    return parts.isEmpty ? 'Método guardado' : parts.join(' · ');
+  }
+
+  Widget _paymentMethodTile(StoredPaymentMethod method) {
+    final isPrimary = method.isDefault;
+
+    final borderColor = isPrimary ? CapColors.gold : Colors.white12;
+    final bg = isPrimary ? CapColors.surface : CapColors.surfaceAlt;
+
+    return Container(
+      margin: const EdgeInsets.only(bottom: 10),
+      padding: const EdgeInsets.fromLTRB(12, 12, 12, 10),
+      decoration: BoxDecoration(
+        color: bg,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: borderColor),
+        boxShadow: const [
+          BoxShadow(
+            color: Colors.black26,
+            blurRadius: 10,
+            offset: Offset(2, 4),
+          ),
+        ],
+      ),
+      child: Row(
+        children: [
+          Container(
+            width: 44,
+            height: 44,
+            decoration: BoxDecoration(
+              color: Colors.white.withOpacity(.06),
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(color: Colors.white10),
+            ),
+            child: Icon(
+              isPrimary ? Icons.verified : Icons.credit_card,
+              color: isPrimary ? CapColors.gold : CapColors.text,
+            ),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  method.label.trim().isEmpty ? 'Tarjeta' : method.label.trim(),
+                  style: const TextStyle(
+                    color: CapColors.text,
+                    fontWeight: FontWeight.w800,
+                  ),
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  _methodSubtitle(method),
+                  style: const TextStyle(
+                    color: CapColors.textMuted,
+                    fontSize: 12,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(width: 10),
+
+          // ✅ Un solo botón: o “PRINCIPAL” (disabled) o “Hacer principal”
+          if (isPrimary)
+            ElevatedButton.icon(
+              onPressed: null,
+              style: ElevatedButton.styleFrom(
+                backgroundColor: CapColors.gold,
+                foregroundColor: Colors.black,
+                disabledBackgroundColor: CapColors.gold,
+                disabledForegroundColor: Colors.black,
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(10),
+                ),
+              ),
+              icon: const Icon(Icons.check, size: 18),
+              label: const Text(
+                'PRINCIPAL',
+                style: TextStyle(fontWeight: FontWeight.w900, fontSize: 12),
+              ),
+            )
+          else
+            OutlinedButton(
+              onPressed: _updatingPaymentMethods
+                  ? null
+                  : () async {
+                      await _setPrimaryMethod(method);
+                    },
+              style: OutlinedButton.styleFrom(
+                side: const BorderSide(color: CapColors.goldDark),
+                foregroundColor: CapColors.gold,
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(10),
+                ),
+              ),
+              child: _updatingPaymentMethods
+                  ? const SizedBox(
+                      width: 14,
+                      height: 14,
+                      child: CircularProgressIndicator(
+                        strokeWidth: 2,
+                        valueColor:
+                            AlwaysStoppedAnimation<Color>(CapColors.gold),
+                      ),
+                    )
+                  : const Text(
+                      'Hacer principal',
+                      style:
+                          TextStyle(fontWeight: FontWeight.w800, fontSize: 12),
+                    ),
+            ),
+
+          const SizedBox(width: 8),
+
+          // Eliminar (icono)
+          IconButton(
+            tooltip: 'Eliminar',
+            onPressed: _updatingPaymentMethods
+                ? null
+                : () async {
+                    // Si solo hay 1, evita dejarlo vacío (opcional)
+                    if (_paymentMethods.length <= 1) {
+                      if (!mounted) return;
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        const SnackBar(
+                          content: Text(
+                              'Debes conservar al menos un método de pago.'),
+                        ),
+                      );
+                      return;
+                    }
+                    await _removePaymentMethod(method);
+                  },
+            icon: const Icon(Icons.delete_outline, color: CapColors.textMuted),
+          ),
+        ],
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final isVerified = _auth.currentUser?.emailVerified ?? false;
     final w = MediaQuery.of(context).size.width;
-    final avatarSize = (w * 0.60).clamp(160.0, 300.0); // ~60% del ancho
+    final avatarSize = (w * 0.60).clamp(160.0, 300.0);
 
     return Container(
       decoration: const BoxDecoration(
         gradient: LinearGradient(
-          colors: [_CapColors.bgBottom, _CapColors.bgMid, _CapColors.bgTop],
+          colors: [CapColors.bgBottom, CapColors.bgMid, CapColors.bgTop],
           stops: [0.0, 0.45, 1.0],
           begin: Alignment.bottomCenter,
           end: Alignment.topCenter,
@@ -1158,7 +1402,7 @@ class _UserProfileScreenState extends State<UserProfileScreen> {
         body: _loading
             ? const Center(
                 child: CircularProgressIndicator(
-                  valueColor: AlwaysStoppedAnimation<Color>(_CapColors.gold),
+                  valueColor: AlwaysStoppedAnimation<Color>(CapColors.gold),
                 ),
               )
             : SingleChildScrollView(
@@ -1183,14 +1427,20 @@ class _UserProfileScreenState extends State<UserProfileScreen> {
                                     color: Colors.white.withOpacity(.08),
                                     borderRadius: BorderRadius.circular(20),
                                   ),
-                                  child: const Icon(Icons.arrow_back,
-                                      size: 18, color: _CapColors.text),
+                                  child: const Icon(
+                                    Icons.arrow_back,
+                                    size: 18,
+                                    color: CapColors.text,
+                                  ),
                                 ),
                                 const SizedBox(width: 8),
-                                const Text('Regresar',
-                                    style: TextStyle(
-                                        color: _CapColors.text,
-                                        fontWeight: FontWeight.w600)),
+                                const Text(
+                                  'Regresar',
+                                  style: TextStyle(
+                                    color: CapColors.text,
+                                    fontWeight: FontWeight.w600,
+                                  ),
+                                ),
                               ],
                             ),
                           ),
@@ -1209,7 +1459,7 @@ class _UserProfileScreenState extends State<UserProfileScreen> {
                               .textTheme
                               .headlineSmall
                               ?.copyWith(
-                                color: _CapColors.gold,
+                                color: CapColors.gold,
                                 fontWeight: FontWeight.w900,
                                 letterSpacing: .6,
                               ),
@@ -1224,7 +1474,8 @@ class _UserProfileScreenState extends State<UserProfileScreen> {
                         child: MaterialBanner(
                           backgroundColor: const Color(0xFFFFF3CD),
                           content: const Text(
-                              'Tu correo no está verificado. Verifica para mejorar la seguridad de tu cuenta.'),
+                            'Tu correo no está verificado. Verifica para mejorar la seguridad de tu cuenta.',
+                          ),
                           leading: const Icon(Icons.info_outline),
                           actions: [
                             TextButton(
@@ -1252,10 +1503,7 @@ class _UserProfileScreenState extends State<UserProfileScreen> {
                               decoration: const BoxDecoration(
                                 shape: BoxShape.circle,
                                 gradient: LinearGradient(
-                                  colors: [
-                                    _CapColors.gold,
-                                    _CapColors.goldDark
-                                  ],
+                                  colors: [CapColors.gold, CapColors.goldDark],
                                   begin: Alignment.topLeft,
                                   end: Alignment.bottomRight,
                                 ),
@@ -1265,19 +1513,25 @@ class _UserProfileScreenState extends State<UserProfileScreen> {
                               child: Container(
                                 width: avatarSize * 0.86,
                                 height: avatarSize * 0.86,
-                                color: _CapColors.surfaceAlt,
+                                color: CapColors.surfaceAlt,
                                 child: _photoUrl == null
                                     ? const Center(
-                                        child: Icon(Icons.person,
-                                            color: Colors.black, size: 80),
+                                        child: Icon(
+                                          Icons.person,
+                                          color: Colors.black,
+                                          size: 80,
+                                        ),
                                       )
                                     : Image.network(
                                         _photoUrl!,
                                         fit: BoxFit.cover,
                                         errorBuilder: (_, __, ___) =>
                                             const Center(
-                                          child: Icon(Icons.person,
-                                              color: Colors.black, size: 80),
+                                          child: Icon(
+                                            Icons.person,
+                                            color: Colors.black,
+                                            size: 80,
+                                          ),
                                         ),
                                       ),
                               ),
@@ -1312,27 +1566,27 @@ class _UserProfileScreenState extends State<UserProfileScreen> {
                     ),
 
                     // Campos perfil
-                    _ProfileField(
+                    ProfileField(
                       icon: Icons.person,
                       label: 'Nombre',
                       controller: _nameCtrl,
                       enabled: _editing,
                     ),
-                    _ProfileField(
+                    ProfileField(
                       icon: Icons.mail,
                       label: 'E-mail',
                       controller: _emailCtrl,
                       keyboardType: TextInputType.emailAddress,
                       enabled: _editing,
                     ),
-                    _ProfileField(
+                    ProfileField(
                       icon: Icons.phone,
                       label: 'Teléfono',
                       controller: _phoneCtrl,
                       keyboardType: TextInputType.phone,
                       enabled: _editing,
                     ),
-                    _ProfileField(
+                    ProfileField(
                       icon: Icons.location_city,
                       label: 'Estado / Ciudad',
                       controller: _cityCtrl,
@@ -1349,9 +1603,10 @@ class _UserProfileScreenState extends State<UserProfileScreen> {
                               child: OutlinedButton.icon(
                                 style: OutlinedButton.styleFrom(
                                   side: const BorderSide(
-                                      color: _CapColors.goldDark),
-                                  foregroundColor: _CapColors.gold,
-                                  backgroundColor: _CapColors.surface,
+                                    color: CapColors.goldDark,
+                                  ),
+                                  foregroundColor: CapColors.gold,
+                                  backgroundColor: CapColors.surface,
                                 ),
                                 onPressed: () =>
                                     setState(() => _editing = true),
@@ -1363,12 +1618,12 @@ class _UserProfileScreenState extends State<UserProfileScreen> {
                             Expanded(
                               child: OutlinedButton(
                                 style: OutlinedButton.styleFrom(
-                                  foregroundColor: _CapColors.text,
+                                  foregroundColor: CapColors.text,
                                   side: const BorderSide(color: Colors.white24),
                                 ),
                                 onPressed: () {
                                   setState(() => _editing = false);
-                                  _loadProfile(); // descarta cambios
+                                  _loadProfile();
                                 },
                                 child: const Text('Cancelar'),
                               ),
@@ -1377,7 +1632,7 @@ class _UserProfileScreenState extends State<UserProfileScreen> {
                             Expanded(
                               child: ElevatedButton.icon(
                                 style: ElevatedButton.styleFrom(
-                                  backgroundColor: _CapColors.gold,
+                                  backgroundColor: CapColors.gold,
                                   foregroundColor: Colors.black,
                                 ),
                                 onPressed: _saving ? null : _saveProfile,
@@ -1386,8 +1641,9 @@ class _UserProfileScreenState extends State<UserProfileScreen> {
                                         width: 16,
                                         height: 16,
                                         child: CircularProgressIndicator(
-                                            strokeWidth: 2,
-                                            color: Colors.black),
+                                          strokeWidth: 2,
+                                          color: Colors.black,
+                                        ),
                                       )
                                     : const Icon(Icons.save),
                                 label: const Text('Guardar'),
@@ -1405,40 +1661,35 @@ class _UserProfileScreenState extends State<UserProfileScreen> {
                         'DATOS DE LA SUSCRIPCIÓN',
                         style:
                             Theme.of(context).textTheme.titleMedium?.copyWith(
-                                  color: _CapColors.gold,
+                                  color: CapColors.gold,
                                   fontWeight: FontWeight.w800,
                                 ),
                       ),
                     ),
-                    _SubscriptionRow(
-                        label: 'MIEMBRO DESDE', value: _fmtDate(_createdAt)),
-                    _SubscriptionRow(
-                        label: 'FECHA DE INICIO', value: _fmtDate(_startDate)),
-                    _SubscriptionRow(
-                        label: 'FECHA DE TÉRMINO', value: _fmtDate(_endDate)),
-                    _SubscriptionRow(
+                    SubscriptionRow(
+                      label: 'MIEMBRO DESDE',
+                      value: _fmtDate(_createdAt),
+                    ),
+                    SubscriptionRow(
+                      label: 'FECHA DE INICIO',
+                      value: _fmtDate(_startDate),
+                    ),
+                    SubscriptionRow(
+                      label: 'FECHA DE TÉRMINO',
+                      value: _fmtDate(_endDate),
+                    ),
+                    SubscriptionRow(
                       label: 'MÉTODO DE PAGO',
                       value: _paymentMethod ??
-                          _paymentMethods
-                              .firstWhere(
-                                (m) => m.isDefault,
-                                orElse: () => _paymentMethods.isNotEmpty
-                                    ? _paymentMethods.first
-                                    : const StoredPaymentMethod(
-                                        id: 'default',
-                                        label: '--',
-                                        brand: '--',
-                                        last4: '----',
-                                        isDefault: true,
-                                      ),
-                              )
-                              .label,
+                          (_primaryMethod(_paymentMethods)?.label ?? '--'),
                     ),
 
                     if (_subscriptionState != null)
                       Padding(
                         padding: const EdgeInsets.symmetric(
-                            horizontal: 16, vertical: 6),
+                          horizontal: 16,
+                          vertical: 6,
+                        ),
                         child: Align(
                           alignment: Alignment.centerLeft,
                           child: Builder(
@@ -1450,7 +1701,7 @@ class _UserProfileScreenState extends State<UserProfileScreen> {
                                   ? Colors.greenAccent
                                   : Colors.white10;
                               final textColor =
-                                  isActive ? Colors.black : _CapColors.text;
+                                  isActive ? Colors.black : CapColors.text;
                               return Chip(
                                 backgroundColor: bg,
                                 label: Text(
@@ -1469,7 +1720,9 @@ class _UserProfileScreenState extends State<UserProfileScreen> {
                     if (_cancelAtPeriodEnd)
                       Padding(
                         padding: const EdgeInsets.symmetric(
-                            horizontal: 16, vertical: 4),
+                          horizontal: 16,
+                          vertical: 4,
+                        ),
                         child: Container(
                           padding: const EdgeInsets.all(12),
                           decoration: BoxDecoration(
@@ -1480,7 +1733,7 @@ class _UserProfileScreenState extends State<UserProfileScreen> {
                             _cancelsAt == null
                                 ? 'La suscripción se cancelará al final del periodo actual.'
                                 : 'La suscripción seguirá activa hasta ${_fmtDate(_cancelsAt)}.',
-                            style: const TextStyle(color: _CapColors.text),
+                            style: const TextStyle(color: CapColors.text),
                           ),
                         ),
                       ),
@@ -1493,7 +1746,7 @@ class _UserProfileScreenState extends State<UserProfileScreen> {
                           Expanded(
                             child: ElevatedButton(
                               style: ElevatedButton.styleFrom(
-                                backgroundColor: _CapColors.gold,
+                                backgroundColor: CapColors.gold,
                                 foregroundColor: Colors.black,
                                 padding:
                                     const EdgeInsets.symmetric(vertical: 12),
@@ -1519,9 +1772,9 @@ class _UserProfileScreenState extends State<UserProfileScreen> {
                           Expanded(
                             child: OutlinedButton(
                               style: OutlinedButton.styleFrom(
-                                side: const BorderSide(
-                                    color: _CapColors.goldDark),
-                                foregroundColor: _CapColors.gold,
+                                side:
+                                    const BorderSide(color: CapColors.goldDark),
+                                foregroundColor: CapColors.gold,
                                 padding:
                                     const EdgeInsets.symmetric(vertical: 12),
                                 shape: RoundedRectangleBorder(
@@ -1539,9 +1792,9 @@ class _UserProfileScreenState extends State<UserProfileScreen> {
                           Expanded(
                             child: OutlinedButton(
                               style: OutlinedButton.styleFrom(
-                                side: const BorderSide(
-                                    color: _CapColors.goldDark),
-                                foregroundColor: _CapColors.gold,
+                                side:
+                                    const BorderSide(color: CapColors.goldDark),
+                                foregroundColor: CapColors.gold,
                                 padding:
                                     const EdgeInsets.symmetric(vertical: 12),
                                 shape: RoundedRectangleBorder(
@@ -1560,7 +1813,7 @@ class _UserProfileScreenState extends State<UserProfileScreen> {
                       ),
                     ),
 
-                    // Gestión de métodos de pago
+                    // ===== Métodos de pago =====
                     Padding(
                       padding: const EdgeInsets.fromLTRB(16, 16, 16, 6),
                       child: Row(
@@ -1571,7 +1824,7 @@ class _UserProfileScreenState extends State<UserProfileScreen> {
                                 .textTheme
                                 .titleMedium
                                 ?.copyWith(
-                                  color: _CapColors.gold,
+                                  color: CapColors.gold,
                                   fontWeight: FontWeight.w800,
                                 ),
                           ),
@@ -1581,34 +1834,26 @@ class _UserProfileScreenState extends State<UserProfileScreen> {
                             onPressed: _updatingPaymentMethods
                                 ? null
                                 : _addPaymentMethod,
-                            icon: const Icon(Icons.add, color: _CapColors.text),
+                            icon: const Icon(Icons.add, color: CapColors.text),
                           ),
                         ],
                       ),
                     ),
                     Padding(
                       padding: const EdgeInsets.symmetric(horizontal: 16),
-                      child: Column(
-                        children: _paymentMethods.isEmpty
-                            ? const [
-                                Text(
-                                  'Aún no guardas métodos de pago alternos.',
-                                  style: TextStyle(color: _CapColors.textMuted),
-                                ),
-                              ]
-                            : _paymentMethods
-                                .map(
-                                  (method) => _PaymentMethodCard(
-                                    method: method,
-                                    isUpdating: _updatingPaymentMethods,
-                                    onSetPrimary: () =>
-                                        _setPrimaryMethod(method),
-                                    onRemove: () =>
-                                        _removePaymentMethod(method),
-                                  ),
-                                )
-                                .toList(),
-                      ),
+                      child: _paymentMethods.isEmpty
+                          ? const Padding(
+                              padding: EdgeInsets.only(top: 6, bottom: 6),
+                              child: Text(
+                                'Aún no guardas métodos de pago alternos.',
+                                style: TextStyle(color: CapColors.textMuted),
+                              ),
+                            )
+                          : Column(
+                              children: _paymentMethods
+                                  .map((m) => _paymentMethodTile(m))
+                                  .toList(),
+                            ),
                     ),
 
                     // ===== Favoritos =====
@@ -1618,7 +1863,7 @@ class _UserProfileScreenState extends State<UserProfileScreen> {
                         'MIS FAVORITOS',
                         style:
                             Theme.of(context).textTheme.titleMedium?.copyWith(
-                                  color: _CapColors.gold,
+                                  color: CapColors.gold,
                                   fontWeight: FontWeight.w800,
                                 ),
                       ),
@@ -1629,15 +1874,14 @@ class _UserProfileScreenState extends State<UserProfileScreen> {
                         child: Center(
                           child: CircularProgressIndicator(
                             valueColor:
-                                AlwaysStoppedAnimation<Color>(_CapColors.gold),
+                                AlwaysStoppedAnimation<Color>(CapColors.gold),
                           ),
                         ),
                       )
                     else ...[
-                      // Docs
                       Padding(
                         padding: const EdgeInsets.symmetric(horizontal: 12),
-                        child: _FavCard(
+                        child: FavCard(
                           title: 'Documentos',
                           child: _favDocs.isEmpty
                               ? const Padding(
@@ -1645,7 +1889,7 @@ class _UserProfileScreenState extends State<UserProfileScreen> {
                                   child: Text(
                                     'No tienes documentos favoritos',
                                     style:
-                                        TextStyle(color: _CapColors.textMuted),
+                                        TextStyle(color: CapColors.textMuted),
                                   ),
                                 )
                               : SizedBox(
@@ -1662,7 +1906,7 @@ class _UserProfileScreenState extends State<UserProfileScreen> {
                                       final ref = _favDocs[i];
                                       return SizedBox(
                                         width: 150,
-                                        child: _DocTile(
+                                        child: DocTile(
                                           name: ref.name,
                                           onTap: () =>
                                               _downloadAndOpenFile(ref),
@@ -1673,10 +1917,9 @@ class _UserProfileScreenState extends State<UserProfileScreen> {
                                 ),
                         ),
                       ),
-                      // Videos
                       Padding(
                         padding: const EdgeInsets.fromLTRB(12, 8, 12, 0),
-                        child: _FavCard(
+                        child: FavCard(
                           title: 'Videos',
                           child: _favVideos.isEmpty
                               ? const Padding(
@@ -1684,7 +1927,7 @@ class _UserProfileScreenState extends State<UserProfileScreen> {
                                   child: Text(
                                     'No tienes videos favoritos',
                                     style:
-                                        TextStyle(color: _CapColors.textMuted),
+                                        TextStyle(color: CapColors.textMuted),
                                   ),
                                 )
                               : SizedBox(
@@ -1695,11 +1938,16 @@ class _UserProfileScreenState extends State<UserProfileScreen> {
                                           MediaQuery.of(ctx).size.width - 48;
                                       if (cardWidth < 220) cardWidth = 220;
                                       if (cardWidth > 340) cardWidth = 340;
+
                                       return ListView.separated(
                                         scrollDirection: Axis.horizontal,
                                         physics: const BouncingScrollPhysics(),
                                         padding: const EdgeInsets.fromLTRB(
-                                            8, 8, 8, 12),
+                                          8,
+                                          8,
+                                          8,
+                                          12,
+                                        ),
                                         itemCount: _favVideos.length,
                                         separatorBuilder: (_, __) =>
                                             const SizedBox(width: 10),
@@ -1707,13 +1955,15 @@ class _UserProfileScreenState extends State<UserProfileScreen> {
                                           final v = _favVideos[i];
                                           return SizedBox(
                                             width: cardWidth,
-                                            child: _VideoTile(
+                                            child: VideoTile(
                                               title: v.title,
                                               youtubeId: v.youtubeId,
                                               description: v.description,
                                               onTap: () {
                                                 Navigator.pushReplacementNamed(
-                                                    context, '/video');
+                                                  context,
+                                                  '/video',
+                                                );
                                               },
                                             ),
                                           );
@@ -1729,360 +1979,7 @@ class _UserProfileScreenState extends State<UserProfileScreen> {
                   ],
                 ),
               ),
-
-        // ✅ Bottom nav — Perfil = índice 4
         bottomNavigationBar: const CapfiscalBottomNav(currentIndex: 4),
-      ),
-    );
-  }
-}
-
-// ----------- Widgets auxiliares de UI -----------
-
-class _ProfileField extends StatelessWidget {
-  const _ProfileField({
-    required this.icon,
-    required this.label,
-    required this.controller,
-    this.enabled = false,
-    this.keyboardType,
-  });
-
-  final IconData icon;
-  final String label;
-  final TextEditingController controller;
-  final bool enabled;
-  final TextInputType? keyboardType;
-
-  @override
-  Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(16, 6, 16, 10),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Icon(icon, color: _CapColors.gold),
-          const SizedBox(width: 10),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  label,
-                  style: const TextStyle(
-                    fontSize: 13,
-                    color: _CapColors.text,
-                    fontWeight: FontWeight.w700,
-                  ),
-                ),
-                const SizedBox(height: 6),
-                TextField(
-                  controller: controller,
-                  enabled: enabled,
-                  keyboardType: keyboardType,
-                  style: const TextStyle(color: _CapColors.text),
-                  decoration: InputDecoration(
-                    isDense: true,
-                    contentPadding: const EdgeInsets.symmetric(
-                        horizontal: 12, vertical: 12),
-                    filled: true,
-                    fillColor: _CapColors.field,
-                    border: OutlineInputBorder(
-                      borderRadius: BorderRadius.circular(8),
-                      borderSide: BorderSide.none,
-                    ),
-                    hintText: 'Descripción',
-                    hintStyle: const TextStyle(color: Colors.white),
-                  ),
-                ),
-              ],
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-class _SubscriptionRow extends StatelessWidget {
-  const _SubscriptionRow({required this.label, required this.value});
-
-  final String label;
-  final String value;
-
-  @override
-  Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(16, 6, 16, 6),
-      child: Row(
-        children: [
-          Expanded(
-            child: Text(
-              label,
-              style: const TextStyle(
-                fontSize: 12,
-                color: _CapColors.text,
-                fontWeight: FontWeight.w700,
-              ),
-            ),
-          ),
-          const SizedBox(width: 12),
-          Expanded(
-            child: Container(
-              height: 48,
-              alignment: Alignment.centerLeft,
-              padding: const EdgeInsets.symmetric(horizontal: 12),
-              decoration: BoxDecoration(
-                color: _CapColors.field,
-                borderRadius: BorderRadius.circular(8),
-              ),
-              child: Text(
-                value,
-                style: const TextStyle(color: _CapColors.text, fontSize: 14),
-              ),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-class _PaymentMethodCard extends StatelessWidget {
-  const _PaymentMethodCard({
-    required this.method,
-    required this.isUpdating,
-    required this.onSetPrimary,
-    required this.onRemove,
-  });
-
-  final StoredPaymentMethod method;
-  final bool isUpdating;
-  final VoidCallback onSetPrimary;
-  final VoidCallback onRemove;
-
-  @override
-  Widget build(BuildContext context) {
-    return Card(
-      color: _CapColors.surface,
-      margin: const EdgeInsets.only(bottom: 12),
-      child: ListTile(
-        title: Text(
-          method.label,
-          style: const TextStyle(color: _CapColors.text),
-        ),
-        subtitle: Text(
-          '${method.brand.toUpperCase()} · •••• ${method.last4}',
-          style: const TextStyle(color: _CapColors.textMuted),
-        ),
-        trailing: method.isDefault
-            ? const Chip(
-                label: Text('Principal'),
-                backgroundColor: Colors.white10,
-                labelStyle: TextStyle(color: _CapColors.text),
-              )
-            : Wrap(
-                spacing: 6,
-                children: [
-                  TextButton(
-                    onPressed: isUpdating ? null : onSetPrimary,
-                    child: const Text('Principal'),
-                  ),
-                  IconButton(
-                    onPressed: isUpdating ? null : onRemove,
-                    icon: const Icon(Icons.delete_outline,
-                        color: Colors.redAccent),
-                  ),
-                ],
-              ),
-      ),
-    );
-  }
-}
-
-// ---- Tarjetas y tiles de Favoritos ----
-
-class _FavCard extends StatelessWidget {
-  const _FavCard({required this.title, required this.child});
-
-  final String title;
-  final Widget child;
-
-  @override
-  Widget build(BuildContext context) {
-    return Card(
-      elevation: 0,
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-      color: _CapColors.surface,
-      child: Padding(
-        padding: const EdgeInsets.fromLTRB(12, 10, 12, 12),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(title,
-                style: const TextStyle(
-                  fontWeight: FontWeight.w800,
-                  fontSize: 16,
-                  color: _CapColors.gold,
-                )),
-            const SizedBox(height: 8),
-            child,
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-class _DocTile extends StatelessWidget {
-  const _DocTile({
-    required this.name,
-    required this.onTap,
-  });
-
-  final String name;
-  final VoidCallback onTap;
-
-  @override
-  Widget build(BuildContext context) {
-    return InkWell(
-      onTap: onTap,
-      borderRadius: BorderRadius.circular(12),
-      child: Container(
-        clipBehavior: Clip.hardEdge,
-        padding: const EdgeInsets.all(12),
-        decoration: BoxDecoration(
-          color: _CapColors.surfaceAlt,
-          borderRadius: BorderRadius.circular(12),
-          border: Border.all(color: Colors.white12),
-        ),
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            const Icon(Icons.description, size: 40, color: _CapColors.gold),
-            const SizedBox(height: 8),
-            Text(
-              name,
-              maxLines: 2,
-              overflow: TextOverflow.ellipsis,
-              textAlign: TextAlign.center,
-              style: const TextStyle(
-                  fontSize: 13,
-                  fontWeight: FontWeight.w600,
-                  color: _CapColors.text),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-class _FavVideo {
-  final String docId;
-  final String youtubeId;
-  final String title;
-  final String description;
-
-  _FavVideo({
-    required this.docId,
-    required this.youtubeId,
-    required this.title,
-    required this.description,
-  });
-}
-
-class _VideoTile extends StatelessWidget {
-  const _VideoTile({
-    required this.title,
-    required this.youtubeId,
-    required this.description,
-    required this.onTap,
-  });
-
-  final String title;
-  final String youtubeId;
-  final String description;
-  final VoidCallback onTap;
-
-  String get _thumb => 'https://img.youtube.com/vi/$youtubeId/hqdefault.jpg';
-
-  @override
-  Widget build(BuildContext context) {
-    return InkWell(
-      onTap: onTap,
-      borderRadius: BorderRadius.circular(12),
-      child: Container(
-        clipBehavior: Clip.hardEdge,
-        decoration: BoxDecoration(
-          color: _CapColors.surfaceAlt,
-          borderRadius: BorderRadius.circular(12),
-          border: Border.all(color: Colors.white12),
-        ),
-        child: Row(
-          children: [
-            ClipRRect(
-              borderRadius: const BorderRadius.only(
-                topLeft: Radius.circular(12),
-                bottomLeft: Radius.circular(12),
-              ),
-              child: SizedBox(
-                width: 120,
-                child: AspectRatio(
-                  aspectRatio: 16 / 9,
-                  child: Image.network(
-                    _thumb,
-                    fit: BoxFit.cover,
-                    errorBuilder: (_, __, ___) => Container(
-                      color: const Color(0xFF3A3A3F),
-                      alignment: Alignment.center,
-                      child: const Icon(Icons.image_not_supported,
-                          color: _CapColors.textMuted),
-                    ),
-                  ),
-                ),
-              ),
-            ),
-            const SizedBox(width: 10),
-            Expanded(
-              child: Padding(
-                padding: const EdgeInsets.fromLTRB(0, 10, 10, 10),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      title.isEmpty ? 'Video' : title,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(
-                        color: _CapColors.text,
-                        fontWeight: FontWeight.w800,
-                        fontSize: 16,
-                      ),
-                    ),
-                    const SizedBox(height: 6),
-                    Container(
-                      padding: const EdgeInsets.symmetric(
-                          horizontal: 8, vertical: 6),
-                      decoration: BoxDecoration(
-                        color: _CapColors.surface,
-                        borderRadius: BorderRadius.circular(6),
-                        border: Border.all(color: Colors.white12),
-                      ),
-                      child: Text(
-                        description.isEmpty ? 'Descripción' : description,
-                        maxLines: 2,
-                        overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(
-                            fontSize: 12, color: _CapColors.textMuted),
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            ),
-          ],
-        ),
       ),
     );
   }

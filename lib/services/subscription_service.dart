@@ -1,273 +1,15 @@
+// lib/services/subscription_service.dart
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart' show User;
 
 /// Represents the normalized state of a user's paid subscription.
 enum SubscriptionState {
-  /// The user never configured billing information.
   none,
-
-  /// The subscription is active and grants full access.
   active,
-
-  /// Active due to a grace period (e.g. payment retry).
   grace,
-
-  /// The subscription expired or was cancelled and has no access.
   expired,
-
-  /// The account was explicitly blocked by admins.
   blocked,
-
-  /// Payment received but awaiting manual confirmation.
   pending,
-}
-
-/// Parsed subscription information kept in the user document.
-class SubscriptionStatus {
-  SubscriptionStatus({
-    this.startDate,
-    this.endDate,
-    this.graceEndsAt,
-    this.paymentMethod,
-    this.statusOverride,
-    this.updatedAt,
-    this.cancelAtPeriodEnd = false,
-    this.cancelsAt,
-    this.stripeSubscriptionId,
-    this.stripeCustomerId,
-    this.paymentMethods = const <StoredPaymentMethod>[],
-    DateTime? checkedAt,
-    Map<String, dynamic>? raw,
-  })  : checkedAt = checkedAt ?? DateTime.now().toUtc(),
-        raw = raw ?? const <String, dynamic>{};
-
-  /// When the subscription started.
-  final DateTime? startDate;
-
-  /// When the subscription should end.
-  final DateTime? endDate;
-
-  /// Optional grace-period end date configured by admins.
-  final DateTime? graceEndsAt;
-
-  /// Stored payment method descriptor (Stripe, transfer, etc.).
-  final String? paymentMethod;
-
-  /// Whether a cancellation at period end is scheduled.
-  final bool cancelAtPeriodEnd;
-
-  /// When the access should be revoked if cancellation is scheduled.
-  final DateTime? cancelsAt;
-
-  /// Stripe subscription identifier (if backend stores it).
-  final String? stripeSubscriptionId;
-
-  /// Stripe customer identifier (if backend stores it).
-  final String? stripeCustomerId;
-
-  /// Known payment methods retrieved from Firestore.
-  final List<StoredPaymentMethod> paymentMethods;
-
-  /// Manual override value stored in Firestore (`subscription.status`).
-  final String? statusOverride;
-
-  /// Timestamp of the last backend update.
-  final DateTime? updatedAt;
-
-  /// Timestamp when this object was materialised.
-  final DateTime checkedAt;
-
-  /// Original map for debugging/advanced use.
-  final Map<String, dynamic> raw;
-
-  /// Quick factory for empty state (no subscription data).
-  factory SubscriptionStatus.empty() =>
-      SubscriptionStatus(checkedAt: DateTime.now().toUtc());
-
-  /// Builds the status from a Firestore document snapshot.
-  factory SubscriptionStatus.fromSnapshot(
-    DocumentSnapshot<Map<String, dynamic>> snapshot,
-  ) {
-    final data = snapshot.data();
-    final Map<String, dynamic> sub =
-        (data != null && data['subscription'] is Map<String, dynamic>)
-            ? Map<String, dynamic>.from(data['subscription'] as Map)
-            : <String, dynamic>{};
-
-    return SubscriptionStatus(
-      startDate: _parseDate(sub['startDate']),
-      endDate: _parseDate(sub['endDate']),
-      graceEndsAt: _parseDate(sub['graceEndsAt'] ?? sub['graceEndDate']),
-      paymentMethod: _parseString(sub['paymentMethod']),
-      statusOverride: _parseString(sub['status']),
-      updatedAt: _parseDate(sub['updatedAt']) ?? _parseDate(data?['updatedAt']),
-      cancelAtPeriodEnd: (sub['cancelAtPeriodEnd'] as bool?) ?? false,
-      cancelsAt: _parseDate(sub['cancelsAt'] ?? sub['cancelScheduledAt']),
-      stripeSubscriptionId: _parseString(sub['stripeSubscriptionId']),
-      stripeCustomerId: _parseString(sub['stripeCustomerId']),
-      paymentMethods:
-          _parsePaymentMethods(sub['paymentMethods'] as List<dynamic>?),
-      raw: sub,
-    );
-  }
-
-  /// Builds a status from an already loaded user document map.
-  factory SubscriptionStatus.fromUserData(Map<String, dynamic> data) {
-    final sub = (data['subscription'] as Map<String, dynamic>?) ??
-        <String, dynamic>{};
-    return SubscriptionStatus(
-      startDate: _parseDate(sub['startDate']),
-      endDate: _parseDate(sub['endDate']),
-      graceEndsAt: _parseDate(sub['graceEndsAt'] ?? sub['graceEndDate']),
-      paymentMethod: _parseString(sub['paymentMethod']),
-      statusOverride: _parseString(sub['status']),
-      updatedAt: _parseDate(sub['updatedAt']) ?? _parseDate(data['updatedAt']),
-      cancelAtPeriodEnd: (sub['cancelAtPeriodEnd'] as bool?) ?? false,
-      cancelsAt: _parseDate(sub['cancelsAt'] ?? sub['cancelScheduledAt']),
-      stripeSubscriptionId: _parseString(sub['stripeSubscriptionId']),
-      stripeCustomerId: _parseString(sub['stripeCustomerId']),
-      paymentMethods:
-          _parsePaymentMethods(sub['paymentMethods'] as List<dynamic>?),
-      raw: sub,
-    );
-  }
-
-  /// Whether some subscription data exists on the user profile.
-  bool get hasData =>
-      startDate != null ||
-      endDate != null ||
-      graceEndsAt != null ||
-      paymentMethod != null ||
-      statusOverride != null;
-
-  /// Normalised override in lowercase.
-  String? get _statusLower => statusOverride?.trim().toLowerCase();
-
-  /// Convenience accessor to know if the account has been manually blocked.
-  bool get isBlocked => _statusLower == 'blocked';
-
-  /// Whether an admin left the account pending manual approval.
-  bool get isPending => _statusLower == 'pending';
-
-  /// Manual switch to grant access without validating dates.
-  bool get isManuallyActive =>
-      _statusLower == 'manual_active' || _statusLower == 'active';
-
-  /// Whether there is an upcoming cancellation that should be shown to the user.
-  bool get isCancellationScheduled =>
-      cancelAtPeriodEnd ||
-      (cancelsAt != null && cancelsAt!.isAfter(DateTime.now().toUtc()));
-
-  /// Convenience accessor for the default payment method object.
-  StoredPaymentMethod? get primaryPaymentMethod {
-    if (paymentMethods.isEmpty) return null;
-    final preferred = paymentMethods
-        .firstWhere((m) => m.isDefault, orElse: () => paymentMethods.first);
-    return preferred;
-  }
-
-  /// Current subscription state taking overrides and dates into account.
-  SubscriptionState get state {
-    if (isBlocked) return SubscriptionState.blocked;
-    if (isPending) return SubscriptionState.pending;
-    if (isManuallyActive) return SubscriptionState.active;
-
-    if (isActive) return SubscriptionState.active;
-    if (isInGrace) return SubscriptionState.grace;
-    if (hasData) return SubscriptionState.expired;
-    return SubscriptionState.none;
-  }
-
-  /// Whether the user can access gated content.
-  bool get isAccessGranted =>
-      state == SubscriptionState.active || state == SubscriptionState.grace;
-
-  /// The remaining time for active/grace states.
-  Duration? get remaining {
-    if (state == SubscriptionState.active && endDate != null) {
-      final diff = endDate!.difference(DateTime.now().toUtc());
-      return diff.isNegative ? Duration.zero : diff;
-    }
-    if (state == SubscriptionState.grace && graceEndsAt != null) {
-      final diff = graceEndsAt!.difference(DateTime.now().toUtc());
-      return diff.isNegative ? Duration.zero : diff;
-    }
-    return null;
-  }
-
-  /// Last moment when the subscription grants access.
-  DateTime? get accessValidUntil {
-    if (state == SubscriptionState.active) return endDate;
-    if (state == SubscriptionState.grace) return graceEndsAt ?? endDate;
-    return endDate;
-  }
-
-  /// Human readable moment when the cancellation will take effect.
-  DateTime? get cancellationEffectiveDate =>
-      cancelsAt ?? accessValidUntil;
-
-  /// Whether the subscription is currently valid.
-  bool get isActive =>
-      endDate != null && endDate!.isAfter(DateTime.now().toUtc());
-
-  /// Whether the user is still in a configured grace period.
-  bool get isInGrace =>
-      !isActive &&
-      graceEndsAt != null &&
-      graceEndsAt!.isAfter(DateTime.now().toUtc());
-
-  /// Friendly helper to render debug information.
-  Map<String, Object?> toDebugMap() => <String, Object?>{
-        'state': state.toString(),
-        'startDate': startDate?.toIso8601String(),
-        'endDate': endDate?.toIso8601String(),
-        'graceEndsAt': graceEndsAt?.toIso8601String(),
-        'paymentMethod': paymentMethod,
-        'statusOverride': statusOverride,
-        'updatedAt': updatedAt?.toIso8601String(),
-        'checkedAt': checkedAt.toIso8601String(),
-      };
-
-  @override
-  bool operator ==(Object other) {
-    if (identical(this, other)) return true;
-    if (other is! SubscriptionStatus) return false;
-    return other.startDate == startDate &&
-        other.endDate == endDate &&
-        other.graceEndsAt == graceEndsAt &&
-        other.paymentMethod == paymentMethod &&
-        other.cancelAtPeriodEnd == cancelAtPeriodEnd &&
-        other.cancelsAt == cancelsAt &&
-        other.stripeSubscriptionId == stripeSubscriptionId &&
-        other.stripeCustomerId == stripeCustomerId &&
-        _listEquals(other.paymentMethods, paymentMethods) &&
-        other.statusOverride == statusOverride &&
-        other.updatedAt == updatedAt;
-  }
-
-  @override
-  int get hashCode => Object.hash(
-        startDate,
-        endDate,
-        graceEndsAt,
-        paymentMethod,
-        cancelAtPeriodEnd,
-        cancelsAt,
-        stripeSubscriptionId,
-        stripeCustomerId,
-        Object.hashAll(paymentMethods),
-        statusOverride,
-        updatedAt,
-      );
-}
-
-bool _listEquals<T>(List<T> a, List<T> b) {
-  if (identical(a, b)) return true;
-  if (a.length != b.length) return false;
-  for (int i = 0; i < a.length; i++) {
-    if (a[i] != b[i]) return false;
-  }
-  return true;
 }
 
 class StoredPaymentMethod {
@@ -294,7 +36,7 @@ class StoredPaymentMethod {
       brand: _parseString(data['brand']) ?? 'tarjeta',
       last4: _parseString(data['last4']) ?? '----',
       isDefault: (data['isDefault'] as bool?) ?? false,
-      createdAt: _parseDate(data['createdAt']) ?? DateTime.now().toUtc(),
+      createdAt: _parseDate(data['createdAt']),
     );
   }
 
@@ -306,63 +48,206 @@ class StoredPaymentMethod {
         'isDefault': isDefault,
         'createdAt': createdAt?.toIso8601String(),
       };
-
-  StoredPaymentMethod copyWith({bool? isDefault}) => StoredPaymentMethod(
-        id: id,
-        label: label,
-        brand: brand,
-        last4: last4,
-        isDefault: isDefault ?? this.isDefault,
-        createdAt: createdAt,
-      );
-
-  @override
-  bool operator ==(Object other) {
-    if (identical(this, other)) return true;
-    if (other is! StoredPaymentMethod) return false;
-    return other.id == id &&
-        other.label == label &&
-        other.brand == brand &&
-        other.last4 == last4 &&
-        other.isDefault == isDefault;
-  }
-
-  @override
-  int get hashCode => Object.hash(id, label, brand, last4, isDefault);
 }
 
-/// Centralised helper to interact with the subscription metadata stored in
-/// Firestore. It wraps read/update helpers so UI widgets do not need to deal
-/// with raw maps or timestamp conversions.
+/// Parsed subscription information kept in the user document.
+class SubscriptionStatus {
+  SubscriptionStatus({
+    this.startDate,
+    this.endDate,
+    this.graceEndsAt,
+    this.paymentMethod,
+    this.statusOverride,
+    this.updatedAt,
+    this.cancelAtPeriodEnd = false,
+    this.cancelsAt,
+    this.stripeSubscriptionId,
+    this.stripeCustomerId,
+    this.paymentMethods = const <StoredPaymentMethod>[],
+    DateTime? checkedAt,
+    Map<String, dynamic>? raw,
+  })  : checkedAt = checkedAt ?? DateTime.now().toUtc(),
+        raw = raw ?? const <String, dynamic>{};
+
+  final DateTime? startDate;
+  final DateTime? endDate;
+  final DateTime? graceEndsAt;
+
+  final String? paymentMethod;
+
+  final bool cancelAtPeriodEnd;
+  final DateTime? cancelsAt;
+
+  final String? stripeSubscriptionId;
+  final String? stripeCustomerId;
+
+  final List<StoredPaymentMethod> paymentMethods;
+
+  /// Manual override value stored in Firestore (`subscription.status`).
+  final String? statusOverride;
+
+  /// Timestamp of the last backend update.
+  final DateTime? updatedAt;
+
+  final DateTime checkedAt;
+  final Map<String, dynamic> raw;
+
+  factory SubscriptionStatus.empty() =>
+      SubscriptionStatus(checkedAt: DateTime.now().toUtc());
+
+  factory SubscriptionStatus.fromSnapshot(
+    DocumentSnapshot<Map<String, dynamic>> snapshot,
+  ) {
+    final data = snapshot.data() ?? const <String, dynamic>{};
+    return _fromMap(data);
+  }
+
+  factory SubscriptionStatus.fromUserData(Map<String, dynamic> data) {
+    return _fromMap(data);
+  }
+
+  static SubscriptionStatus _fromMap(Map<String, dynamic> data) {
+    final Map<String, dynamic> sub = (data['subscription'] is Map)
+        ? Map<String, dynamic>.from(data['subscription'] as Map)
+        : <String, dynamic>{};
+
+    // ✅ PRIORIDAD: SIEMPRE usa el mapa real `subscription.{field}`.
+    // Fallback solo si no existe (compat con campos legacy top-level "subscription.endDate", etc.)
+    final startDate = _parseDate(sub['startDate']) ??
+        _parseDate(data['subscription.startDate']);
+    final endDate =
+        _parseDate(sub['endDate']) ?? _parseDate(data['subscription.endDate']);
+
+    final graceEndsAt = _parseDate(sub['graceEndsAt'] ?? sub['graceEndDate']) ??
+        _parseDate(data['subscription.graceEndsAt'] ??
+            data['subscription.graceEndDate']);
+
+    final updatedAt = _parseDate(sub['updatedAt']) ??
+        _parseDate(data['subscription.updatedAt']) ??
+        _parseDate(data['updatedAt']);
+
+    final paymentMethod = _parseString(sub['paymentMethod']) ??
+        _parseString(data['subscription.paymentMethod']);
+
+    final statusOverride = _parseString(sub['status']) ??
+        _parseString(data['subscription.status']);
+
+    final cancelAtPeriodEnd = (sub['cancelAtPeriodEnd'] as bool?) ??
+        (data['subscription.cancelAtPeriodEnd'] as bool?) ??
+        false;
+
+    final cancelsAt =
+        _parseDate(sub['cancelsAt'] ?? sub['cancelScheduledAt']) ??
+            _parseDate(data['subscription.cancelsAt'] ??
+                data['subscription.cancelScheduledAt']);
+
+    final stripeSubscriptionId = _parseString(sub['stripeSubscriptionId']) ??
+        _parseString(data['subscription.stripeSubscriptionId']);
+
+    final stripeCustomerId = _parseString(sub['stripeCustomerId']) ??
+        _parseString(data['subscription.stripeCustomerId']);
+
+    final paymentMethods = () {
+      final parsed = _parsePaymentMethods(sub['paymentMethods']);
+      if (parsed.isNotEmpty) return parsed;
+      return _parsePaymentMethods(data['subscription.paymentMethods']);
+    }();
+
+    return SubscriptionStatus(
+      startDate: startDate,
+      endDate: endDate,
+      graceEndsAt: graceEndsAt,
+      paymentMethod: paymentMethod,
+      statusOverride: statusOverride,
+      updatedAt: updatedAt,
+      cancelAtPeriodEnd: cancelAtPeriodEnd,
+      cancelsAt: cancelsAt,
+      stripeSubscriptionId: stripeSubscriptionId,
+      stripeCustomerId: stripeCustomerId,
+      paymentMethods: paymentMethods,
+      raw: sub,
+    );
+  }
+
+  bool get hasData =>
+      startDate != null ||
+      endDate != null ||
+      graceEndsAt != null ||
+      paymentMethod != null ||
+      statusOverride != null ||
+      paymentMethods.isNotEmpty;
+
+  String? get _statusLower => statusOverride?.trim().toLowerCase();
+
+  bool get isBlocked => _statusLower == 'blocked';
+  bool get isPending => _statusLower == 'pending';
+
+  /// ✅ Override real SOLO para soporte. (No uses "active" como override, porque ignoras endDate)
+  bool get isManuallyActive => _statusLower == 'manual_active';
+
+  bool get isActive =>
+      endDate != null && endDate!.isAfter(DateTime.now().toUtc());
+
+  bool get isInGrace =>
+      !isActive &&
+      graceEndsAt != null &&
+      graceEndsAt!.isAfter(DateTime.now().toUtc());
+
+  SubscriptionState get state {
+    if (isBlocked) return SubscriptionState.blocked;
+    if (isPending) return SubscriptionState.pending;
+
+    if (isManuallyActive) return SubscriptionState.active;
+
+    if (isActive) return SubscriptionState.active;
+    if (isInGrace) return SubscriptionState.grace;
+
+    if (hasData) return SubscriptionState.expired;
+    return SubscriptionState.none;
+  }
+
+  bool get isAccessGranted =>
+      state == SubscriptionState.active || state == SubscriptionState.grace;
+
+  Duration? get remaining {
+    final now = DateTime.now().toUtc();
+    if (state == SubscriptionState.active && endDate != null) {
+      final diff = endDate!.difference(now);
+      return diff.isNegative ? Duration.zero : diff;
+    }
+    if (state == SubscriptionState.grace && graceEndsAt != null) {
+      final diff = graceEndsAt!.difference(now);
+      return diff.isNegative ? Duration.zero : diff;
+    }
+    return null;
+  }
+}
+
+/// Centralised helper to interact with subscription metadata stored in Firestore.
 class SubscriptionService {
   SubscriptionService({FirebaseFirestore? firestore})
       : _firestore = firestore ?? FirebaseFirestore.instance;
 
   final FirebaseFirestore _firestore;
 
-  /// ====== NUEVO (opción B): asegurar users/{uid} sin campos protegidos ======
-  ///
-  /// Llama esto apenas tengas al usuario autenticado (p. ej. en AuthGate).
-  /// No escribe `subscription`, `status` ni `updatedAt` (cumple tus reglas).
   static Future<void> ensureUserDoc(User user) async {
     final ref = FirebaseFirestore.instance.collection('users').doc(user.uid);
     final snap = await ref.get();
+
     if (!snap.exists) {
       await ref.set({
-        'email': user.email,
-        'displayName': user.displayName ?? '',
+        'email': user.email ?? '',
+        'name': user.displayName ?? '',
         'createdAt': FieldValue.serverTimestamp(),
-      });
+        'updatedAt': FieldValue.serverTimestamp(),
+      }, SetOptions(merge: true));
     }
   }
 
-  /// Watches the subscription document for a given user.
   Stream<SubscriptionStatus> watchSubscriptionStatus(String uid) {
-    final ref = _userDoc(uid);
-    return ref.snapshots().map(SubscriptionStatus.fromSnapshot);
+    return _userDoc(uid).snapshots().map(SubscriptionStatus.fromSnapshot);
   }
 
-  /// Forces a server roundtrip to obtain the latest subscription status.
   Future<SubscriptionStatus> refreshSubscriptionStatus(String uid) async {
     final snapshot =
         await _userDoc(uid).get(const GetOptions(source: Source.server));
@@ -372,10 +257,7 @@ class SubscriptionService {
     return SubscriptionStatus.fromSnapshot(snapshot);
   }
 
-  /// ====== NUEVO (opción B): parche local tras PaymentSheet exitoso ======
-  ///
-  /// Escribe únicamente `subscription.*` y `updatedAt` (merge),
-  /// cumpliendo tus reglas de seguridad para el "client patch".
+  /// Patch local tras pago exitoso.
   Future<void> applyLocalPaymentSuccess(
     String uid, {
     String paymentMethod = 'Stripe PaymentSheet',
@@ -390,12 +272,13 @@ class SubscriptionService {
       startDate: start,
       endDate: end,
       paymentMethod: paymentMethod,
-      status: 'active', // valores permitidos por tus reglas
+      status: 'active',
       cancelAtPeriodEnd: false,
+      touchUpdatedAt: true,
     );
   }
 
-  /// También puedes marcar 'pending' si el cargo queda en revisión.
+  /// Patch local tras pago pendiente.
   Future<void> applyLocalPaymentPending(
     String uid, {
     String paymentMethod = 'Stripe PaymentSheet',
@@ -412,10 +295,12 @@ class SubscriptionService {
       paymentMethod: paymentMethod,
       status: 'pending',
       cancelAtPeriodEnd: false,
+      touchUpdatedAt: true,
     );
   }
 
-  /// Updates subscription fields. Pass `null` values to CLEAR fields (delete).
+  /// Updates ONLY provided fields (nested under subscription.*)
+  /// + Limpia campos legacy top-level cuyo nombre literal incluye punto.
   Future<void> updateSubscription(
     String uid, {
     DateTime? startDate,
@@ -428,37 +313,49 @@ class SubscriptionService {
     List<StoredPaymentMethod>? paymentMethods,
     String? stripeSubscriptionId,
     String? stripeCustomerId,
+    bool clearStartDate = false,
+    bool clearEndDate = false,
+    bool clearGraceEndsAt = false,
+    bool clearPaymentMethod = false,
+    bool clearStatus = false,
+    bool clearCancelsAt = false,
+    bool clearStripeSubscriptionId = false,
+    bool clearStripeCustomerId = false,
+    bool touchUpdatedAt = true,
   }) async {
-    final updates = <String, Object?>{};
+    final ref = _userDoc(uid);
+
+    // ✅ update() permite keys String (paths) y FieldPath (para borrar legacy).
+    final updates = <Object, Object?>{};
 
     if (startDate != null) {
       updates['subscription.startDate'] = Timestamp.fromDate(startDate.toUtc());
-    } else {
+    } else if (clearStartDate) {
       updates['subscription.startDate'] = FieldValue.delete();
     }
 
     if (endDate != null) {
       updates['subscription.endDate'] = Timestamp.fromDate(endDate.toUtc());
-    } else {
+    } else if (clearEndDate) {
       updates['subscription.endDate'] = FieldValue.delete();
     }
 
     if (graceEndsAt != null) {
       updates['subscription.graceEndsAt'] =
           Timestamp.fromDate(graceEndsAt.toUtc());
-    } else {
+    } else if (clearGraceEndsAt) {
       updates['subscription.graceEndsAt'] = FieldValue.delete();
     }
 
     if (paymentMethod != null) {
       updates['subscription.paymentMethod'] = paymentMethod;
-    } else {
+    } else if (clearPaymentMethod) {
       updates['subscription.paymentMethod'] = FieldValue.delete();
     }
 
     if (status != null) {
       updates['subscription.status'] = status;
-    } else {
+    } else if (clearStatus) {
       updates['subscription.status'] = FieldValue.delete();
     }
 
@@ -467,9 +364,8 @@ class SubscriptionService {
     }
 
     if (cancelsAt != null) {
-      updates['subscription.cancelsAt'] =
-          Timestamp.fromDate(cancelsAt.toUtc());
-    } else if (cancelAtPeriodEnd == false) {
+      updates['subscription.cancelsAt'] = Timestamp.fromDate(cancelsAt.toUtc());
+    } else if (clearCancelsAt) {
       updates['subscription.cancelsAt'] = FieldValue.delete();
     }
 
@@ -483,19 +379,62 @@ class SubscriptionService {
           stripeSubscriptionId.isEmpty
               ? FieldValue.delete()
               : stripeSubscriptionId;
+    } else if (clearStripeSubscriptionId) {
+      updates['subscription.stripeSubscriptionId'] = FieldValue.delete();
     }
 
     if (stripeCustomerId != null) {
-      updates['subscription.stripeCustomerId'] = stripeCustomerId.isEmpty
-          ? FieldValue.delete()
-          : stripeCustomerId;
+      updates['subscription.stripeCustomerId'] =
+          stripeCustomerId.isEmpty ? FieldValue.delete() : stripeCustomerId;
+    } else if (clearStripeCustomerId) {
+      updates['subscription.stripeCustomerId'] = FieldValue.delete();
     }
 
-    // Estos dos timestamps cumplen tu regla de "solo subscription y/o updatedAt".
-    updates['subscription.updatedAt'] = FieldValue.serverTimestamp();
-    updates['updatedAt'] = FieldValue.serverTimestamp();
+    if (touchUpdatedAt) {
+      updates['subscription.updatedAt'] = FieldValue.serverTimestamp();
+      updates['updatedAt'] = FieldValue.serverTimestamp();
+    }
 
-    await _userDoc(uid).set(updates, SetOptions(merge: true));
+    // ✅ Limpieza de legacy fields (TOP-LEVEL) cuyo nombre literal incluye punto.
+    // En consola se ven como:  subscription.endDate  (no dentro del mapa subscription)
+    void _delLegacy(String literal) {
+      updates[FieldPath([literal])] = FieldValue.delete();
+    }
+
+    _delLegacy('subscription.startDate');
+    _delLegacy('subscription.endDate');
+    _delLegacy('subscription.graceEndsAt');
+    _delLegacy('subscription.graceEndDate');
+    _delLegacy('subscription.paymentMethod');
+    _delLegacy('subscription.status');
+    _delLegacy('subscription.cancelAtPeriodEnd');
+    _delLegacy('subscription.cancelsAt');
+    _delLegacy('subscription.cancelScheduledAt');
+    _delLegacy('subscription.paymentMethods');
+    _delLegacy('subscription.stripeSubscriptionId');
+    _delLegacy('subscription.stripeCustomerId');
+    _delLegacy('subscription.updatedAt');
+
+    if (updates.isEmpty) return;
+
+    try {
+      await ref.update(updates);
+    } on FirebaseException catch (e) {
+      if (e.code == 'not-found') {
+        // ✅ FIX: set() solo acepta Map<String,dynamic> y NO soporta FieldPath keys.
+        // Creamos el doc con un set mínimo y luego aplicamos el update real.
+        await ref.set(
+          <String, dynamic>{
+            'createdAt': FieldValue.serverTimestamp(),
+            'updatedAt': FieldValue.serverTimestamp(),
+          },
+          SetOptions(merge: true),
+        );
+        await ref.update(updates);
+      } else {
+        rethrow;
+      }
+    }
   }
 
   DocumentReference<Map<String, dynamic>> _userDoc(String uid) {
@@ -526,10 +465,13 @@ String? _parseString(dynamic value) {
   return value.toString();
 }
 
-List<StoredPaymentMethod> _parsePaymentMethods(List<dynamic>? raw) {
-  if (raw == null || raw.isEmpty) return const <StoredPaymentMethod>[];
-  return raw
-      .whereType<Map<String, dynamic>>()
-      .map(StoredPaymentMethod.fromMap)
-      .toList();
+List<StoredPaymentMethod> _parsePaymentMethods(dynamic raw) {
+  if (raw is! List) return const <StoredPaymentMethod>[];
+  final out = <StoredPaymentMethod>[];
+  for (final item in raw) {
+    if (item is Map) {
+      out.add(StoredPaymentMethod.fromMap(Map<String, dynamic>.from(item)));
+    }
+  }
+  return out;
 }

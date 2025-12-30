@@ -1,4 +1,3 @@
-// lib/screens/login_screen.dart
 import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
@@ -33,7 +32,7 @@ class _LoginScreenState extends State<LoginScreen> {
   final _email = TextEditingController();
   final _pass = TextEditingController();
 
-  // NUEVOS: campos de perfil para crear la cuenta
+  // Campos de perfil para crear la cuenta
   final _name = TextEditingController();
   final _phone = TextEditingController();
   final _city = TextEditingController();
@@ -54,6 +53,8 @@ class _LoginScreenState extends State<LoginScreen> {
     super.dispose();
   }
 
+  /// ✅ FIX: NO escribir el mapa completo "subscription" aquí.
+  /// Solo creamos/aseguramos el doc base del usuario.
   Future<void> _ensureUserDoc(
     User user, {
     String? name,
@@ -68,7 +69,6 @@ class _LoginScreenState extends State<LoginScreen> {
     final regCity = city?.trim();
 
     if (!snap.exists) {
-      // Nuevo usuario: crear doc base con suscripción inactiva
       await ref.set({
         'name': (regName != null && regName.isNotEmpty)
             ? regName
@@ -77,54 +77,39 @@ class _LoginScreenState extends State<LoginScreen> {
         'phone': regPhone ?? '',
         'city': regCity ?? '',
         'photoUrl': user.photoURL,
-        'subscription': {
-          'startDate': null,
-          'endDate': null,
-          'graceEndsAt': null,
-          'status': 'inactive',
-          'paymentMethod': null,
-          'updatedAt': FieldValue.serverTimestamp(),
-        },
-        'status': 'inactive',
         'createdAt': FieldValue.serverTimestamp(),
         'updatedAt': FieldValue.serverTimestamp(),
-      });
+      }, SetOptions(merge: true));
       return;
     }
 
-    // Usuario existente: solo asegurar campos mínimos sin activar manualmente
-    final data = snap.data();
-    final sub = (data?['subscription'] as Map<String, dynamic>?) ?? {};
+    // Usuario existente: solo parchea datos base si faltan (sin tocar subscription)
+    final data = snap.data() ?? <String, dynamic>{};
     final updates = <String, Object?>{};
 
-    if (!sub.containsKey('startDate') &&
-        !updates.containsKey('subscription.startDate')) {
-      updates['subscription.startDate'] = null;
-    }
-    if (!sub.containsKey('endDate') &&
-        !updates.containsKey('subscription.endDate')) {
-      updates['subscription.endDate'] = null;
-    }
-    if (!sub.containsKey('graceEndsAt') && !sub.containsKey('graceEndDate')) {
-      updates['subscription.graceEndsAt'] = null;
-    }
-    if (!sub.containsKey('status') &&
-        !updates.containsKey('subscription.status')) {
-      updates['subscription.status'] = 'inactive';
-    }
-    if (!sub.containsKey('paymentMethod') &&
-        !updates.containsKey('subscription.paymentMethod')) {
-      updates['subscription.paymentMethod'] = null;
+    final existingName = (data['name'] ?? '').toString().trim();
+    if (existingName.isEmpty && (user.displayName ?? '').trim().isNotEmpty) {
+      updates['name'] = user.displayName!.trim();
     }
 
-    if (!(data?.containsKey('status') ?? false)) {
-      updates['status'] = 'inactive';
+    final existingEmail = (data['email'] ?? '').toString().trim();
+    if (existingEmail.isEmpty && (user.email ?? '').trim().isNotEmpty) {
+      updates['email'] = user.email!.trim();
+    }
+
+    if (regPhone != null && regPhone.isNotEmpty) {
+      final existingPhone = (data['phone'] ?? '').toString().trim();
+      if (existingPhone.isEmpty) updates['phone'] = regPhone;
+    }
+
+    if (regCity != null && regCity.isNotEmpty) {
+      final existingCity = (data['city'] ?? '').toString().trim();
+      if (existingCity.isEmpty) updates['city'] = regCity;
     }
 
     if (updates.isNotEmpty) {
-      updates['subscription.updatedAt'] = FieldValue.serverTimestamp();
       updates['updatedAt'] = FieldValue.serverTimestamp();
-      await ref.update(updates);
+      await ref.set(updates, SetOptions(merge: true));
     }
   }
 
@@ -149,7 +134,6 @@ class _LoginScreenState extends State<LoginScreen> {
         );
         createdAccount = true;
 
-        // Guarda también el displayName en Firebase Auth
         final displayName = _name.text.trim();
         if (displayName.isNotEmpty) {
           await cred.user?.updateDisplayName(displayName);
@@ -159,7 +143,6 @@ class _LoginScreenState extends State<LoginScreen> {
       if (cred.user != null) {
         await _ensureUserDoc(
           cred.user!,
-          // 👉 Datos iniciales de perfil para que aparezcan en UserProfileScreen
           name: createdAccount ? _name.text.trim() : null,
           phone: createdAccount ? _phone.text.trim() : null,
           city: createdAccount ? _city.text.trim() : null,
@@ -305,7 +288,6 @@ class _LoginScreenState extends State<LoginScreen> {
                 child: Column(
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    // ===== Logo responsive =====
                     LayoutBuilder(
                       builder: (context, c) {
                         final w = c.maxWidth.clamp(280.0, 480.0);
@@ -336,8 +318,6 @@ class _LoginScreenState extends State<LoginScreen> {
                       textAlign: TextAlign.center,
                     ),
                     const SizedBox(height: 24),
-
-                    // ===== Card del formulario =====
                     Container(
                       width: double.infinity,
                       padding: const EdgeInsets.fromLTRB(16, 18, 16, 16),
@@ -372,8 +352,6 @@ class _LoginScreenState extends State<LoginScreen> {
                               ),
                             ),
                             const SizedBox(height: 14),
-
-                            // Email
                             TextFormField(
                               controller: _email,
                               keyboardType: TextInputType.emailAddress,
@@ -393,8 +371,6 @@ class _LoginScreenState extends State<LoginScreen> {
                               },
                             ),
                             const SizedBox(height: 12),
-
-                            // Password
                             TextFormField(
                               controller: _pass,
                               obscureText: _obscure,
@@ -417,14 +393,10 @@ class _LoginScreenState extends State<LoginScreen> {
                               validator: (v) {
                                 final t = (v ?? '').trim();
                                 if (t.isEmpty) return 'Ingresa tu contraseña';
-                                if (t.length < 6) {
-                                  return 'Mínimo 6 caracteres';
-                                }
+                                if (t.length < 6) return 'Mínimo 6 caracteres';
                                 return null;
                               },
                             ),
-
-                            // ===== Campos extra SOLO en crear cuenta =====
                             if (!_isLogin) ...[
                               const SizedBox(height: 12),
                               TextFormField(
@@ -438,9 +410,7 @@ class _LoginScreenState extends State<LoginScreen> {
                                 validator: (v) {
                                   if (_isLogin) return null;
                                   final t = (v ?? '').trim();
-                                  if (t.isEmpty) {
-                                    return 'Ingresa tu nombre';
-                                  }
+                                  if (t.isEmpty) return 'Ingresa tu nombre';
                                   return null;
                                 },
                               ),
@@ -457,9 +427,7 @@ class _LoginScreenState extends State<LoginScreen> {
                                 validator: (v) {
                                   if (_isLogin) return null;
                                   final t = (v ?? '').trim();
-                                  if (t.isEmpty) {
-                                    return 'Ingresa tu teléfono';
-                                  }
+                                  if (t.isEmpty) return 'Ingresa tu teléfono';
                                   return null;
                                 },
                               ),
@@ -475,15 +443,13 @@ class _LoginScreenState extends State<LoginScreen> {
                                 validator: (v) {
                                   if (_isLogin) return null;
                                   final t = (v ?? '').trim();
-                                  if (t.isEmpty) {
+                                  if (t.isEmpty)
                                     return 'Ingresa tu estado/ciudad';
-                                  }
                                   return null;
                                 },
                               ),
                               const SizedBox(height: 12),
                             ],
-
                             if (_isLogin) ...[
                               const SizedBox(height: 8),
                               Align(
@@ -500,7 +466,6 @@ class _LoginScreenState extends State<LoginScreen> {
                                 ),
                               ),
                             ],
-
                             const SizedBox(height: 8),
                             _goldButton(
                               text: _isLogin ? 'Entrar' : 'Registrarme',
@@ -531,7 +496,6 @@ class _LoginScreenState extends State<LoginScreen> {
                         ),
                       ),
                     ),
-
                     const SizedBox(height: 18),
                     const Text(
                       'Al continuar aceptas nuestros Términos y Aviso de Privacidad.',

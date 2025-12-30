@@ -1,191 +1,184 @@
 import 'dart:async';
-import 'package:flutter/material.dart';
+
+import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:flutter/material.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import '../services/subscription_service.dart';
-import '../widgets/subscription_scope.dart';
 import 'home_screen.dart';
-import 'login_screen.dart';
-import 'subscription_required_screen.dart';
-import 'biblioteca_legal_screen.dart';
-import 'video_screen.dart';
-import 'chat.dart';
-import 'user_profile_screen.dart';
+import 'login_screen.dart' as login;
+import 'subscription_required_screen.dart' as sub;
 
 class AuthGate extends StatelessWidget {
   const AuthGate({super.key});
 
   @override
   Widget build(BuildContext context) {
-    return StreamBuilder<User?>(
-      stream: FirebaseAuth.instance.authStateChanges(),
-      builder: (context, snapshot) {
-        // Mientras conecta con FirebaseAuth
-        if (snapshot.connectionState == ConnectionState.waiting) {
-          return const Scaffold(
-            body: Center(child: CircularProgressIndicator()),
-          );
-        }
-
-        // Si hay usuario autenticado -> Home (pasando por SubscriptionGate)
-        if (snapshot.hasData) {
-          final user = snapshot.data!;
-          return _SubscriptionGate(user: user);
-        }
-
-        // Si NO hay usuario -> Login
-        return const LoginScreen();
-      },
-    );
+    return const SubscriptionGate(child: HomeScreen());
   }
 }
 
-class _SubscriptionGate extends StatefulWidget {
-  const _SubscriptionGate({required this.user});
-
-  final User user;
+class SubscriptionGate extends StatefulWidget {
+  const SubscriptionGate({super.key, required this.child});
+  final Widget child;
 
   @override
-  State<_SubscriptionGate> createState() => _SubscriptionGateState();
+  State<SubscriptionGate> createState() => _SubscriptionGateState();
 }
 
-class _SubscriptionGateState extends State<_SubscriptionGate> {
-  final SubscriptionService _service = SubscriptionService();
-  late Stream<SubscriptionStatus> _stream;
+class _SubscriptionGateState extends State<SubscriptionGate>
+    with WidgetsBindingObserver {
+  final _auth = FirebaseAuth.instance;
+  final _db = FirebaseFirestore.instance;
+  late final SubscriptionService _subs = SubscriptionService(firestore: _db);
+
+  Timer? _expiryTimer;
+  DateTime? _scheduledFor;
+
+  // ✅ estrictísimo: solo ACTIVE
+  bool _canAccess(SubscriptionStatus s) => s.state == SubscriptionState.active;
 
   @override
   void initState() {
     super.initState();
-    _stream = _service.watchSubscriptionStatus(widget.user.uid);
-
-    // Asegura que exista users/{uid} (NO toca campos protegidos)
-    // Esto cumple con tus reglas de Firestore.
-    unawaited(_warmUpUserDoc(widget.user));
+    WidgetsBinding.instance.addObserver(this);
   }
 
   @override
-  void didUpdateWidget(covariant _SubscriptionGate oldWidget) {
-    super.didUpdateWidget(oldWidget);
-    if (oldWidget.user.uid != widget.user.uid) {
-      _stream = _service.watchSubscriptionStatus(widget.user.uid);
-      // Si cambia de usuario en caliente, asegurar el doc del nuevo uid.
-      unawaited(_warmUpUserDoc(widget.user));
+  void dispose() {
+    _expiryTimer?.cancel();
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    // ✅ cada vez que regresa la app, fuerza refresh desde server
+    if (state == AppLifecycleState.resumed) {
+      final u = _auth.currentUser;
+      if (u != null) {
+        unawaited(_refreshServer(u.uid));
+      }
     }
   }
 
-  Future<void> _warmUpUserDoc(User user) async {
-    try {
-      await SubscriptionService.ensureUserDoc(user);
-    } catch (e) {
-      // Silencioso: si por alguna razón hay un permiso denegado o condición de carrera,
-      // no bloquea la UI. Sigue el stream y el botón de pago seguirá funcionando.
-      // Puedes loguearlo si deseas:
-      // debugPrint('ensureUserDoc failed: $e');
+  void _scheduleRecheck(SubscriptionStatus status) {
+    final now = DateTime.now().toUtc();
+    DateTime? next;
+
+    // Fin de acceso: endDate o graceEndsAt
+    final candidates = <DateTime?>[
+      status.endDate,
+      status.graceEndsAt,
+      status.cancelsAt,
+    ];
+
+    for (final d in candidates) {
+      if (d == null) continue;
+      if (d.isAfter(now)) {
+        if (next == null || d.isBefore(next)) next = d;
+      }
     }
+
+    if (next == null) {
+      _expiryTimer?.cancel();
+      _scheduledFor = null;
+      return;
+    }
+
+    if (_scheduledFor != null && next.isAtSameMomentAs(_scheduledFor!)) return;
+
+    _scheduledFor = next;
+    _expiryTimer?.cancel();
+
+    final delay = next.difference(now) + const Duration(seconds: 2);
+    _expiryTimer = Timer(delay, () {
+      if (mounted) setState(() {});
+    });
   }
 
-  Future<SubscriptionStatus> _refresh() {
-    return _service.refreshSubscriptionStatus(widget.user.uid);
+  Future<void> _cacheForOffline(SubscriptionStatus st) async {
+    final prefs = await SharedPreferences.getInstance();
+    final end = st.endDate?.millisecondsSinceEpoch;
+    final grace = st.graceEndsAt?.millisecondsSinceEpoch;
+
+    if (end != null) {
+      await prefs.setInt('sub_end_ms', end);
+    } else {
+      await prefs.remove('sub_end_ms');
+    }
+
+    if (grace != null) {
+      await prefs.setInt('sub_grace_end_ms', grace);
+    } else {
+      await prefs.remove('sub_grace_end_ms');
+    }
+
+    await prefs.setString('sub_state', st.state.name);
+    await prefs.setInt(
+        'sub_cached_at_ms', DateTime.now().millisecondsSinceEpoch);
   }
 
-  Future<void> _signOut() async {
-    await FirebaseAuth.instance.signOut();
+  Future<SubscriptionStatus> _refreshServer(String uid) async {
+    final s = await _subs.refreshSubscriptionStatus(uid);
+    _scheduleRecheck(s);
+    unawaited(_cacheForOffline(s));
+    return s;
   }
 
   @override
   Widget build(BuildContext context) {
-    return StreamBuilder<SubscriptionStatus>(
-      stream: _stream,
-      builder: (context, snapshot) {
-        if (snapshot.connectionState == ConnectionState.waiting) {
+    return StreamBuilder<User?>(
+      stream: _auth.authStateChanges(),
+      builder: (context, authSnap) {
+        if (authSnap.connectionState == ConnectionState.waiting) {
           return const Scaffold(
-            body: Center(child: CircularProgressIndicator()),
-          );
+              body: Center(child: CircularProgressIndicator()));
         }
 
-        if (snapshot.hasError) {
-          return SubscriptionRequiredScreen(
-            status: SubscriptionStatus.empty(),
-            onRefresh: _refresh,
-            onSignOut: _signOut,
-            errorMessage:
-                'No pudimos verificar tu suscripción: ${snapshot.error}',
-          );
+        final user = authSnap.data;
+        if (user == null) {
+          return const login.LoginScreen();
         }
 
-        final status = snapshot.data ?? SubscriptionStatus.empty();
+        return StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
+          stream: _db
+              .collection('users')
+              .doc(user.uid)
+              .snapshots(includeMetadataChanges: true),
+          builder: (context, userSnap) {
+            if (userSnap.connectionState == ConnectionState.waiting) {
+              return const Scaffold(
+                  body: Center(child: CircularProgressIndicator()));
+            }
 
-        if (status.isAccessGranted) {
-          return SubscriptionScope(
-            status: status,
-            onRefresh: _refresh,
-            child: const _PrivateAreaNavigator(),
-          );
-        }
+            if (userSnap.data?.exists != true) {
+              unawaited(SubscriptionService.ensureUserDoc(user));
+              return const Scaffold(
+                  body: Center(child: CircularProgressIndicator()));
+            }
 
-        return SubscriptionRequiredScreen(
-          status: status,
-          onRefresh: _refresh,
-          onSignOut: _signOut,
+            final status = SubscriptionStatus.fromSnapshot(userSnap.data!);
+
+            _scheduleRecheck(status);
+            unawaited(_cacheForOffline(status));
+
+            if (_canAccess(status)) {
+              return widget.child;
+            }
+
+            return sub.SubscriptionRequiredScreen(
+              status: status,
+              onRefresh: () => _refreshServer(user.uid),
+              onSignOut: () async => _auth.signOut(),
+              errorMessage: userSnap.hasError
+                  ? 'No pudimos validar tu suscripción.'
+                  : null,
+            );
+          },
         );
       },
-    );
-  }
-}
-
-class _PrivateAreaNavigator extends StatefulWidget {
-  const _PrivateAreaNavigator();
-
-  @override
-  State<_PrivateAreaNavigator> createState() => _PrivateAreaNavigatorState();
-}
-
-class _PrivateAreaNavigatorState extends State<_PrivateAreaNavigator> {
-  final GlobalKey<NavigatorState> _navigatorKey = GlobalKey<NavigatorState>();
-
-  Future<bool> _handleWillPop() async {
-    final navigator = _navigatorKey.currentState;
-    if (navigator == null) return true;
-    final didPop = await navigator.maybePop();
-    return !didPop;
-  }
-
-  Route<dynamic> _onGenerateRoute(RouteSettings settings) {
-    Widget page;
-    switch (settings.name) {
-      case '/biblioteca':
-        page = const BibliotecaLegalScreen();
-        break;
-      case '/video':
-        page = const VideoScreen();
-        break;
-      case '/chat':
-        page = const ChatScreen();
-        break;
-      case '/perfil':
-        page = const UserProfileScreen();
-        break;
-      case '/home':
-      default:
-        page = const HomeScreen();
-        break;
-    }
-
-    return MaterialPageRoute<void>(
-      builder: (_) => page,
-      settings: settings,
-    );
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return WillPopScope(
-      onWillPop: _handleWillPop,
-      child: Navigator(
-        key: _navigatorKey,
-        initialRoute: '/home',
-        onGenerateRoute: _onGenerateRoute,
-      ),
     );
   }
 }

@@ -1,3 +1,4 @@
+// lib/screens/subscription_required_screen.dart
 import 'dart:async';
 import 'dart:convert';
 
@@ -7,8 +8,6 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:http/http.dart' as http;
 import 'package:flutter_stripe/flutter_stripe.dart';
-import 'package:cloud_firestore/cloud_firestore.dart';
-import 'package:firebase_core/firebase_core.dart';
 
 import '../config/subscription_config.dart';
 import '../services/payment_service.dart';
@@ -44,8 +43,8 @@ class _SubscriptionRequiredScreenState extends State<SubscriptionRequiredScreen>
   final SubscriptionPaymentService _paymentService =
       SubscriptionPaymentService.instance;
 
-  // ====== Stripe PaymentSheet config ======
   static const int _planPriceCents = 19900; // $199.00 MXN
+  static const int _durationDays = 30;
 
   static const _bgTop = Color(0xFF0A0A0B);
   static const _bgMid = Color(0xFF2A2A2F);
@@ -53,10 +52,45 @@ class _SubscriptionRequiredScreenState extends State<SubscriptionRequiredScreen>
   static const _surface = Color(0xFF1C1C21);
   static const _gold = Color(0xFFE1B85C);
 
+  bool _canAccess(SubscriptionStatus s) {
+    return s.state == SubscriptionState.active ||
+        s.state == SubscriptionState.grace;
+  }
+
+  void _goHome() {
+    if (!mounted) return;
+    Navigator.of(context, rootNavigator: true)
+        .pushNamedAndRemoveUntil('/home', (route) => false);
+  }
+
+  Future<void> _goHomeIfActive() async {
+    if (widget.onRefresh == null) return;
+    final st = await widget.onRefresh!.call();
+    if (!mounted) return;
+    if (_canAccess(st)) _goHome();
+  }
+
+  void _autoRedirectIfNowActive() {
+    if (!_canAccess(widget.status)) return;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      _goHome();
+    });
+  }
+
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    _autoRedirectIfNowActive();
+  }
+
+  @override
+  void didUpdateWidget(covariant SubscriptionRequiredScreen oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.status.state != widget.status.state) {
+      _autoRedirectIfNowActive();
+    }
   }
 
   @override
@@ -74,7 +108,7 @@ class _SubscriptionRequiredScreenState extends State<SubscriptionRequiredScreen>
       _sawCheckoutTransition = true;
     } else if (state == AppLifecycleState.resumed && _sawCheckoutTransition) {
       _sawCheckoutTransition = false;
-      unawaited(_completeHostedCheckout());
+      Future.microtask(_completeHostedCheckout);
     }
   }
 
@@ -84,6 +118,12 @@ class _SubscriptionRequiredScreenState extends State<SubscriptionRequiredScreen>
     try {
       final status = await widget.onRefresh!.call();
       if (!mounted) return;
+
+      if (_canAccess(status)) {
+        _goHome();
+        return;
+      }
+
       final msg = switch (status.state) {
         SubscriptionState.active => 'Tu suscripción está activa.',
         SubscriptionState.grace =>
@@ -95,6 +135,7 @@ class _SubscriptionRequiredScreenState extends State<SubscriptionRequiredScreen>
           'Seguimos detectando la suscripción expirada.',
         SubscriptionState.none => 'Aún no hay una suscripción registrada.',
       };
+
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
     } catch (e) {
       if (!mounted) return;
@@ -109,22 +150,22 @@ class _SubscriptionRequiredScreenState extends State<SubscriptionRequiredScreen>
   Future<void> _contactSupport() async {
     if (_openingContact) return;
     setState(() => _openingContact = true);
+
     const email = 'capfiscal.app@gmail.com';
     final uri = Uri(
       scheme: 'mailto',
       path: email,
-      queryParameters: {
-        'subject': 'Ayuda con mi suscripción CAPFISCAL',
-      },
+      queryParameters: {'subject': 'Ayuda con mi suscripción CAPFISCAL'},
     );
+
     try {
       final launched = await launchUrl(uri);
-      if (!launched) {
-        if (!mounted) return;
+      if (!launched && mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
             content: Text(
-                'No se pudo abrir el correo. Escríbenos a capfiscal.app@gmail.com'),
+              'No se pudo abrir el correo. Escríbenos a capfiscal.app@gmail.com',
+            ),
           ),
         );
       }
@@ -170,44 +211,37 @@ class _SubscriptionRequiredScreenState extends State<SubscriptionRequiredScreen>
         paymentMethod: 'Stripe Checkout',
       );
 
-      if (confirmation.isActive) {
-        // === ESCRIBIR EN FIRESTORE (web/checkout) ===
-        await FirebaseFirestore.instance.collection('users').doc(user.uid).set({
-          'subscription': {
-            'status': 'active',
-            'startDate': Timestamp.now(),
-            'endDate': Timestamp.fromDate(
-              DateTime.now().add(const Duration(days: 30)),
-            ),
-            'paymentMethod': 'stripe_checkout',
-            'updatedAt': FieldValue.serverTimestamp(),
-          }
-        }, SetOptions(merge: true));
+      final subsService = SubscriptionService();
 
-        if (widget.onRefresh != null) {
-          try {
-            await widget.onRefresh!.call();
-          } on FirebaseException catch (err) {
-            if (err.code != 'permission-denied') rethrow;
-            SubscriptionConfig.debugLog(
-              'Refresco bloqueado tras Stripe: ${err.message}',
-            );
-          }
-        }
+      if (confirmation.isActive) {
+        await subsService.applyLocalPaymentSuccess(
+          user.uid,
+          paymentMethod: 'Stripe Checkout',
+          durationDays: _durationDays,
+        );
+
+        // ✅ refresca y manda a home si ya quedó activo
+        await _goHomeIfActive();
+
         if (!mounted) return;
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text(
               confirmation.message ??
-                  'Pago confirmado. Activamos tu acceso por 30 días.',
+                  'Pago confirmado. Activamos tu acceso por $_durationDays días.',
             ),
           ),
         );
       } else if (confirmation.isPending) {
+        await subsService.applyLocalPaymentPending(
+          user.uid,
+          paymentMethod: 'Stripe Checkout',
+          durationDays: _durationDays,
+        );
+
         if (!mounted) return;
-        setState(() {
-          _waitingCheckoutResult = true;
-        });
+        setState(() => _waitingCheckoutResult = true);
+
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text(
@@ -216,6 +250,7 @@ class _SubscriptionRequiredScreenState extends State<SubscriptionRequiredScreen>
             ),
           ),
         );
+
         Future.delayed(const Duration(seconds: 6), () {
           if (!mounted) return;
           if (_waitingCheckoutResult && !_processingPayment) {
@@ -248,7 +283,6 @@ class _SubscriptionRequiredScreenState extends State<SubscriptionRequiredScreen>
     }
   }
 
-  // ====== NUEVO: PaymentSheet nativo para Android/iOS ======
   Future<void> _startPaymentWithPaymentSheet() async {
     if (_processingPayment) return;
 
@@ -266,7 +300,6 @@ class _SubscriptionRequiredScreenState extends State<SubscriptionRequiredScreen>
     try {
       final email = user.email ?? '${user.uid}@capfiscal.local';
 
-      // 1) Llamar a tu Cloud Function (HTTP)
       final paymentUrl = SubscriptionConfig.stripePaymentIntentUrl;
       if (paymentUrl.isEmpty) {
         throw StateError(
@@ -274,68 +307,69 @@ class _SubscriptionRequiredScreenState extends State<SubscriptionRequiredScreen>
         );
       }
 
+      final idToken = await user.getIdToken(true);
+
       final resp = await http.post(
         Uri.parse(paymentUrl),
-        headers: {'Content-Type': 'application/json'},
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': 'Bearer $idToken',
+        },
         body: jsonEncode({
-          'amount': _planPriceCents, // centavos
+          'amount': _planPriceCents,
           'currency': 'mxn',
           'email': email,
           'uid': user.uid,
           'description': 'Suscripción mensual CAPFISCAL',
-          'metadata': {'uid': user.uid},
+          'metadata': {'uid': user.uid, 'type': 'subscription_payment'},
         }),
       );
 
       if (resp.statusCode != 200) {
         throw Exception('Stripe init falló: ${resp.body}');
       }
-      final data = jsonDecode(resp.body) as Map<String, dynamic>;
+
+      final Map<String, dynamic> data =
+          jsonDecode(resp.body) as Map<String, dynamic>;
       if (data['success'] != true) {
         throw Exception('Stripe init falló: ${data['error']}');
       }
 
-      // 2) Inicializar PaymentSheet
+      final clientSecret = data['paymentIntent'] as String?;
+      final customerId = data['customer'] as String?;
+      final ephemeralKey = data['ephemeralKey'] as String?;
+
+      if (clientSecret == null || customerId == null || ephemeralKey == null) {
+        throw Exception(
+          'Respuesta incompleta del servidor: faltan llaves de Stripe.',
+        );
+      }
+
       await Stripe.instance.initPaymentSheet(
         paymentSheetParameters: SetupPaymentSheetParameters(
           merchantDisplayName: SubscriptionConfig.merchantDisplayName,
-          paymentIntentClientSecret: data['paymentIntent'] as String,
-          customerId: data['customer'] as String,
-          customerEphemeralKeySecret: data['ephemeralKey'] as String,
+          paymentIntentClientSecret: clientSecret,
+          customerId: customerId,
+          customerEphemeralKeySecret: ephemeralKey,
           allowsDelayedPaymentMethods: true,
         ),
       );
 
-      // 3) Presentar PaymentSheet
       await Stripe.instance.presentPaymentSheet();
 
-      // === ESCRIBIR EN FIRESTORE (móvil/paymentsheet) ===
-      final start = Timestamp.now();
-      final end = Timestamp.fromDate(
-        DateTime.now().add(const Duration(days: 30)),
+      await SubscriptionService().applyLocalPaymentSuccess(
+        user.uid,
+        paymentMethod: 'Stripe PaymentSheet',
+        durationDays: _durationDays,
       );
-
-      await FirebaseFirestore.instance.collection('users').doc(user.uid).set({
-        'subscription': {
-          'status': 'active',
-          'startDate': start,
-          'endDate': end,
-          'paymentMethod': 'card',
-          'updatedAt': FieldValue.serverTimestamp(),
-        }
-      }, SetOptions(merge: true));
 
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Pago realizado correctamente.')),
       );
 
-      // 4) Refrescar estado para que AuthGate/SubscriptionGate muestren acceso
-      if (widget.onRefresh != null) {
-        try {
-          await widget.onRefresh!.call();
-        } catch (_) {}
-      }
+      // ✅ refresca y manda a home si ya quedó activo
+      await _goHomeIfActive();
     } on StripeException catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
@@ -355,29 +389,16 @@ class _SubscriptionRequiredScreenState extends State<SubscriptionRequiredScreen>
     }
   }
 
-  // ====== Reemplazo: usa PaymentSheet en mobile, Checkout Link en web ======
   Future<void> _startPayment() async {
     if (_processingPayment || _waitingCheckoutResult) return;
 
     if (!kIsWeb) {
-      // Mobile (Android/iOS): PaymentSheet nativo
       return _startPaymentWithPaymentSheet();
-    }
-
-    // ---- WEB: Fallback a tu flujo actual con Checkout Link ----
-    final user = FirebaseAuth.instance.currentUser;
-    if (user == null) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Inicia sesión para completar el pago.')),
-      );
-      return;
     }
 
     if (!SubscriptionConfig.hasCheckoutConfiguration) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Configura el enlace de pago de Stripe.'),
-        ),
+        const SnackBar(content: Text('Configura el enlace de pago de Stripe.')),
       );
       return;
     }
@@ -395,11 +416,9 @@ class _SubscriptionRequiredScreenState extends State<SubscriptionRequiredScreen>
 
     setState(() => _processingPayment = true);
     try {
-      final mode = LaunchMode.platformDefault;
-
       final launched = await launchUrl(
         uri,
-        mode: mode,
+        mode: LaunchMode.platformDefault,
         webOnlyWindowName: '_self',
       );
 
@@ -412,10 +431,11 @@ class _SubscriptionRequiredScreenState extends State<SubscriptionRequiredScreen>
         _waitingCheckoutResult = true;
         _sawCheckoutTransition = false;
       });
+
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
           content: Text(
-            'Cuando completes el pago regresa a la app, activaremos tu acceso automáticamente.',
+            'Cuando completes el pago regresa a la app para confirmar tu acceso.',
           ),
         ),
       );
@@ -433,6 +453,7 @@ class _SubscriptionRequiredScreenState extends State<SubscriptionRequiredScreen>
   @override
   Widget build(BuildContext context) {
     final status = widget.status;
+
     final title = switch (status.state) {
       SubscriptionState.active => 'Acceso concedido temporalmente',
       SubscriptionState.grace => 'Periodo de gracia activo',
@@ -444,8 +465,7 @@ class _SubscriptionRequiredScreenState extends State<SubscriptionRequiredScreen>
 
     final subtitle = widget.errorMessage ??
         switch (status.state) {
-          SubscriptionState.active =>
-            'Detectamos un estado activo manual. Verifica tus datos.',
+          SubscriptionState.active => 'Tu plan está activo.',
           SubscriptionState.grace =>
             'Aprovecha para completar tu renovación antes de que termine.',
           SubscriptionState.pending =>
@@ -453,23 +473,36 @@ class _SubscriptionRequiredScreenState extends State<SubscriptionRequiredScreen>
           SubscriptionState.blocked =>
             'El equipo CAPFISCAL bloqueó tu acceso. Escríbenos si crees que es un error.',
           SubscriptionState.expired =>
-            'Necesitas renovar tu plan mensual para seguir editando y descargando documentos.',
+            'Necesitas renovar tu plan mensual para seguir descargando documentos.',
           SubscriptionState.none =>
             'Aún no contamos con una suscripción activa asociada a tu cuenta.',
         };
 
+    final accent = switch (status.state) {
+      SubscriptionState.blocked => Colors.redAccent,
+      SubscriptionState.expired => Colors.orangeAccent,
+      SubscriptionState.pending => Colors.blueAccent,
+      _ => _gold,
+    };
+
+    final showPaymentSection = status.state == SubscriptionState.none ||
+        status.state == SubscriptionState.expired;
+
+    final hasMobilePay = SubscriptionConfig.hasPaymentSheetConfiguration;
+    final hasWebPay = SubscriptionConfig.hasCheckoutConfiguration;
+
+    final showPaymentButton =
+        showPaymentSection && (kIsWeb ? hasWebPay : hasMobilePay);
+
+    final showPaymentConfigHint =
+        showPaymentSection && !(kIsWeb ? hasWebPay : hasMobilePay);
+
     final details = <_DetailRow>[
-      _DetailRow(
-        label: 'Inicio',
-        value: _formatDate(status.startDate),
-      ),
-      _DetailRow(
-        label: 'Vence',
-        value: _formatDate(status.endDate),
-      ),
+      _DetailRow(label: 'Inicio', value: _formatDate(status.startDate)),
+      _DetailRow(label: 'Vence', value: _formatDate(status.endDate)),
       _DetailRow(
         label: 'Método de pago',
-        value: status.paymentMethod?.isNotEmpty == true
+        value: (status.paymentMethod?.isNotEmpty == true)
             ? status.paymentMethod!
             : 'Sin registrar',
       ),
@@ -486,29 +519,6 @@ class _SubscriptionRequiredScreenState extends State<SubscriptionRequiredScreen>
         ),
       );
     }
-
-    final accent = switch (status.state) {
-      SubscriptionState.blocked => Colors.redAccent,
-      SubscriptionState.expired => Colors.orangeAccent,
-      SubscriptionState.pending => Colors.blueAccent,
-      _ => _gold,
-    };
-
-    // ====== CAMBIO CLAVE: lógica de visibilidad del botón según plataforma ======
-    final showPaymentSection = status.state == SubscriptionState.none ||
-        status.state == SubscriptionState.expired;
-
-    // Móvil: depende de la publishable key (PaymentSheet)
-    // Web: depende del Checkout URL
-    final hasMobilePay = SubscriptionConfig.hasPaymentSheetConfiguration;
-    final hasWebPay = SubscriptionConfig.hasCheckoutConfiguration;
-
-    final showPaymentButton =
-        showPaymentSection && (kIsWeb ? hasWebPay : hasMobilePay);
-
-    final showPaymentConfigHint =
-        showPaymentSection && !(kIsWeb ? hasWebPay : hasMobilePay);
-    // ============================================================================
 
     return Container(
       decoration: const BoxDecoration(
@@ -621,7 +631,8 @@ class _SubscriptionRequiredScreenState extends State<SubscriptionRequiredScreen>
                                             strokeWidth: 2,
                                             valueColor:
                                                 AlwaysStoppedAnimation<Color>(
-                                                    Colors.black),
+                                              Colors.black,
+                                            ),
                                           ),
                                         )
                                       : _waitingCheckoutResult
@@ -634,7 +645,8 @@ class _SubscriptionRequiredScreenState extends State<SubscriptionRequiredScreen>
                                             ? 'Esperando confirmación…'
                                             : 'Pagar y activar',
                                     style: const TextStyle(
-                                        fontWeight: FontWeight.w700),
+                                      fontWeight: FontWeight.w700,
+                                    ),
                                   ),
                                   style: ElevatedButton.styleFrom(
                                     backgroundColor: _gold,
@@ -745,14 +757,12 @@ class _SubscriptionRequiredScreenState extends State<SubscriptionRequiredScreen>
 
 class _DetailRow {
   const _DetailRow({required this.label, required this.value});
-
   final String label;
   final String value;
 }
 
 class _DetailRowWidget extends StatelessWidget {
   const _DetailRowWidget({required this.row});
-
   final _DetailRow row;
 
   @override
@@ -762,17 +772,16 @@ class _DetailRowWidget extends StatelessWidget {
       child: Row(
         mainAxisAlignment: MainAxisAlignment.spaceBetween,
         children: [
-          Text(
-            row.label,
-            style: const TextStyle(color: Color(0xFF8E8E96)),
-          ),
+          Text(row.label, style: const TextStyle(color: Color(0xFF8E8E96))),
           const SizedBox(width: 16),
           Expanded(
             child: Text(
               row.value,
               textAlign: TextAlign.end,
               style: const TextStyle(
-                  color: Colors.white, fontWeight: FontWeight.w600),
+                color: Colors.white,
+                fontWeight: FontWeight.w600,
+              ),
             ),
           ),
         ],
@@ -810,9 +819,7 @@ String _formatDuration(Duration duration) {
   }
   final minutes = duration.inMinutes - totalHours * 60;
   if (totalHours >= 1) {
-    if (minutes > 0) {
-      return '$totalHours h $minutes min';
-    }
+    if (minutes > 0) return '$totalHours h $minutes min';
     return '$totalHours h';
   }
   return '${duration.inMinutes} min';

@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:ui' as ui;
+
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -7,13 +8,13 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_app_check/firebase_app_check.dart';
 import 'package:flutter_stripe/flutter_stripe.dart';
-import 'package:cloud_functions/cloud_functions.dart'; // 👈 para callable ping
+import 'package:cloud_functions/cloud_functions.dart';
 
 import 'firebase_options.dart';
 import 'config/subscription_config.dart';
 
 // Screens
-import 'screens/auth_gate.dart';
+import 'screens/auth_gate.dart'; // ✅ aquí vive SubscriptionGate
 import 'screens/login_screen.dart';
 import 'screens/home_screen.dart';
 import 'screens/biblioteca_legal_screen.dart';
@@ -22,13 +23,14 @@ import 'screens/chat.dart';
 import 'screens/user_profile_screen.dart';
 import 'screens/offline_screen.dart';
 import 'screens/offline_home_screen.dart';
+
 import 'services/connectivity_service.dart';
+import 'services/subscription_service.dart'; // para enum en offline gate
 
 Future<void> main() async {
   await runZonedGuarded(() async {
     WidgetsFlutterBinding.ensureInitialized();
 
-    // ✅ Inicializa Firebase ANTES de runApp (evita I-COR000005).
     if (Firebase.apps.isEmpty) {
       await Firebase.initializeApp(
         options: DefaultFirebaseOptions.currentPlatform,
@@ -36,31 +38,23 @@ Future<void> main() async {
     }
 
     if (kDebugMode) {
-      // 👇 Log de diagnóstico: confirma a qué proyecto apunta el cliente
       final o = Firebase.app().options;
       debugPrint('[FIREBASE] projectId=${o.projectId} appId=${o.appId}');
     }
 
-    // 🔐 Activa App Check en desarrollo para silenciar los avisos del Storage.
     await _configureFirebaseAppCheck();
     await _configureStripeSdk();
 
-    // Handler global: evita que errores burbujeen y cierren la app.
     ui.PlatformDispatcher.instance.onError = (error, stack) {
-      // TODO: enviar a Crashlytics/Sentry si lo deseas
       return true;
     };
 
     runApp(const MyApp());
-  }, (error, stack) {
-    // TODO: log centralizado si lo deseas
-  });
+  }, (error, stack) {});
 }
 
 Future<void> _configureFirebaseAppCheck() async {
-  if (kIsWeb) {
-    return;
-  }
+  if (kIsWeb) return;
 
   final appCheck = FirebaseAppCheck.instance;
   if (kDebugMode || kProfileMode) {
@@ -75,41 +69,18 @@ Future<void> _configureFirebaseAppCheck() async {
     );
   }
 
-  // Garantiza que los tokens se renueven automáticamente para Cloud Functions.
   await appCheck.setTokenAutoRefreshEnabled(true);
-
-  if (kDebugMode) {
-    debugPrint(
-      '[AppCheck] Debug activo. Si aparece un error 401 en Cloud Functions, '
-      'verifica que el token 9c0062ca-efd8-4179-bc80-fa6fe8cfd490 esté '
-      'registrado en la consola de Firebase.',
-    );
-  }
 }
 
 Future<void> _configureStripeSdk() async {
   final publishableKey = SubscriptionConfig.stripePublishableKey;
-  if (publishableKey.isEmpty) {
-    if (kDebugMode) {
-      debugPrint(
-        '[Stripe] STRIPE_PUBLISHABLE_KEY no configurado. '
-        'Ejecuta la app con --dart-define=STRIPE_PUBLISHABLE_KEY=pk_test_...',
-      );
-    }
-    return;
-  }
+  if (publishableKey.isEmpty) return;
 
   Stripe.publishableKey = publishableKey;
 
   try {
     await Stripe.instance.applySettings();
-  } catch (err) {
-    if (kDebugMode) {
-      debugPrint('[Stripe] No se pudieron aplicar los ajustes: $err');
-    }
-  }
-
-  SubscriptionConfig.debugLog('[Stripe] SDK inicializado');
+  } catch (_) {}
 }
 
 class MyApp extends StatelessWidget {
@@ -123,13 +94,16 @@ class MyApp extends StatelessWidget {
       routes: {
         '/': (context) => const BootstrapGate(),
         '/login': (context) => const LoginScreen(),
-        '/home': (context) => const HomeScreen(),
-        '/biblioteca': (context) => const BibliotecaLegalScreen(),
-        '/video': (context) => const VideoScreen(),
-        '/chat': (context) => const ChatScreen(),
-        '/perfil': (context) => const UserProfileScreen(),
 
-        // 🧪 Ruta de diagnóstico para probar la callable `ping`
+        // ✅ TODO protegido
+        '/home': (context) => const SubscriptionGate(child: HomeScreen()),
+        '/biblioteca': (context) =>
+            const SubscriptionGate(child: BibliotecaLegalScreen()),
+        '/video': (context) => const SubscriptionGate(child: VideoScreen()),
+        '/chat': (context) => const SubscriptionGate(child: ChatScreen()),
+        '/perfil': (context) =>
+            const SubscriptionGate(child: UserProfileScreen()),
+
         '/_ping': (context) => const DebugPingScreen(),
       },
     );
@@ -205,12 +179,17 @@ class _BootstrapGateState extends State<BootstrapGate> {
         if (snap.hasError || snap.data != true) {
           return const _RecoveryScreen();
         }
+
+        // ✅ offline mode: NO dejar entrar si ya venció según cache
         if (_offlineMode) {
-          return OfflineHomeScreen(
+          return _OfflineSubscriptionGate(
             onRetryOnline: _retryConnection,
+            child: OfflineHomeScreen(onRetryOnline: _retryConnection),
           );
         }
-        return const AuthGate();
+
+        // ✅ Entry normal protegido
+        return const SubscriptionGate(child: HomeScreen());
       },
     );
   }
@@ -233,7 +212,6 @@ class _BootstrapGateState extends State<BootstrapGate> {
               options: DefaultFirebaseOptions.currentPlatform,
             );
           }
-          // Aquí otras inits ligeras (Remote Config, etc.)
         }, attempts: 3, delayMs: 300)
             .timeout(const Duration(seconds: 10));
       }
@@ -249,9 +227,7 @@ class _BootstrapGateState extends State<BootstrapGate> {
     }
   }
 
-  Future<void> _safeCleanup(SharedPreferences prefs) async {
-    // Limpiezas puntuales si lo necesitas (prefs.remove('clave'), etc.)
-  }
+  Future<void> _safeCleanup(SharedPreferences prefs) async {}
 
   Future<T> _retry<T>(
     Future<T> Function() op, {
@@ -280,7 +256,6 @@ class _SplashScreen extends StatelessWidget {
       backgroundColor: Colors.black,
       body: Center(child: CircularProgressIndicator()),
     );
-    // Si usas flutter_native_splash, este splash apenas se verá.
   }
 }
 
@@ -305,7 +280,7 @@ class _RecoveryScreen extends StatelessWidget {
             const SizedBox(height: 16),
             FilledButton(
               onPressed: () {
-                (context as Element).reassemble(); // reintento rápido
+                (context as Element).reassemble();
               },
               child: const Text('Reintentar'),
             ),
@@ -316,8 +291,87 @@ class _RecoveryScreen extends StatelessWidget {
   }
 }
 
+/// ✅ Bloqueo offline basado en cache (sub_end_ms + sub_state)
+class _OfflineSubscriptionGate extends StatelessWidget {
+  const _OfflineSubscriptionGate({
+    required this.child,
+    required this.onRetryOnline,
+  });
+
+  final Widget child;
+  final Future<void> Function() onRetryOnline;
+
+  Future<bool> _isStillValidOffline() async {
+    final prefs = await SharedPreferences.getInstance();
+
+    final endMs = prefs.getInt('sub_end_ms');
+    final state = prefs.getString('sub_state') ?? '';
+
+    if (endMs == null) return false;
+
+    final now = DateTime.now().toUtc().millisecondsSinceEpoch;
+    final notExpired = now < endMs;
+
+    // strict: solo ACTIVE
+    final stateOk = state == SubscriptionState.active.name;
+
+    return stateOk && notExpired;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return FutureBuilder<bool>(
+      future: _isStillValidOffline(),
+      builder: (context, snap) {
+        if (snap.connectionState != ConnectionState.done) {
+          return const Scaffold(
+            backgroundColor: Colors.black,
+            body: Center(child: CircularProgressIndicator()),
+          );
+        }
+
+        if (snap.data == true) return child;
+
+        return Scaffold(
+          backgroundColor: Colors.black,
+          body: Center(
+            child: Padding(
+              padding: const EdgeInsets.all(20),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const Icon(Icons.lock_outline,
+                      color: Colors.orangeAccent, size: 60),
+                  const SizedBox(height: 14),
+                  const Text(
+                    'Suscripción vencida',
+                    style: TextStyle(
+                        color: Colors.white,
+                        fontSize: 20,
+                        fontWeight: FontWeight.w800),
+                  ),
+                  const SizedBox(height: 10),
+                  const Text(
+                    'Sin conexión no podemos validar/renovar tu acceso.\nConéctate para pagar y reactivar.',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(color: Colors.white70, height: 1.35),
+                  ),
+                  const SizedBox(height: 16),
+                  FilledButton(
+                    onPressed: () async => onRetryOnline(),
+                    child: const Text('Reintentar conexión'),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        );
+      },
+    );
+  }
+}
+
 /// ====== 🧪 Pantalla de diagnóstico para probar la callable `ping` ======
-/// Navega manualmente a '/_ping' (solo queda registrada la ruta; no hay botón visible)
 class DebugPingScreen extends StatefulWidget {
   const DebugPingScreen({super.key});
 
@@ -332,30 +386,15 @@ class _DebugPingScreenState extends State<DebugPingScreen> {
     setState(() => _result = 'Llamando…');
     try {
       final functions = FirebaseFunctions.instanceFor(
-        app: Firebase.app(), // 👈 MISMO app
+        app: Firebase.app(),
         region: 'us-central1',
       );
       final res = await functions.httpsCallable('ping').call();
       setState(() => _result = 'OK: ${res.data}');
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('PING => ${res.data}')),
-        );
-      }
     } on FirebaseFunctionsException catch (e) {
       setState(() => _result = 'Error: ${e.code}: ${e.message}');
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Error: ${e.code}: ${e.message}')),
-        );
-      }
     } catch (e) {
       setState(() => _result = 'Error: $e');
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Error: $e')),
-        );
-      }
     }
   }
 
@@ -377,15 +416,7 @@ class _DebugPingScreenState extends State<DebugPingScreen> {
               label: const Text('Probar ping'),
             ),
             const SizedBox(height: 12),
-            Text(
-              _result,
-              style: const TextStyle(fontFamily: 'monospace'),
-            ),
-            const SizedBox(height: 8),
-            const Text(
-              'Esperado: { uid: "<tu uid>", appCheck: true/false }',
-              style: TextStyle(color: Colors.grey),
-            ),
+            Text(_result, style: const TextStyle(fontFamily: 'monospace')),
           ],
         ),
       ),
