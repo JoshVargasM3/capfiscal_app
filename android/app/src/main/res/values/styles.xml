@@ -1,15 +1,18 @@
 ﻿<?xml version="1.0" encoding="utf-8"?>
 <resources>
+
     <!-- Tema de arranque (mientras Flutter inicia) -->
-    <style name="LaunchTheme" parent="Theme.MaterialComponents.DayNight.NoActionBar.Bridge">
-        <item name="android:windowBackground">@color/splash_background</item>
+    <style name="LaunchTheme" parent="Theme.MaterialComponents.DayNight.NoActionBar">
+        <item name="android:windowBackground">@drawable/capfiscal_splash_bg</item>
     </style>
 
     <!-- Tema normal (cuando Flutter ya está listo) -->
-    <style name="NormalTheme" parent="Theme.MaterialComponents.DayNight.NoActionBar.Bridge">
-        <item name="android:windowBackground">@android:color/white</item>
-        <!-- Opcional: asegúrate de tener un colorPrimary/Secondary -->
+    <style name="NormalTheme" parent="Theme.MaterialComponents.DayNight.NoActionBar">
+        <!-- Evita pantallazo blanco al cambiar de Activity/volver -->
+        <item name="android:windowBackground">@drawable/capfiscal_splash_bg</item>
+
         <item name="colorPrimary">@color/colorPrimary</item>
         <item name="colorSecondary">@color/colorSecondary</item>
     </style>
+
 </resources>

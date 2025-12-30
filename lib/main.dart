@@ -13,6 +13,10 @@ import 'package:cloud_functions/cloud_functions.dart';
 import 'firebase_options.dart';
 import 'config/subscription_config.dart';
 
+// ✅ THEME / COLORS
+import 'theme/cap_theme.dart';
+import 'theme/cap_colors.dart';
+
 // Screens
 import 'screens/auth_gate.dart'; // ✅ aquí vive SubscriptionGate
 import 'screens/login_screen.dart';
@@ -90,6 +94,12 @@ class MyApp extends StatelessWidget {
   Widget build(BuildContext context) {
     return MaterialApp(
       debugShowCheckedModeBanner: false,
+
+      // ✅ CAPFISCAL THEME
+      theme: CapTheme.dark,
+      darkTheme: CapTheme.dark,
+      themeMode: ThemeMode.dark,
+
       initialRoute: '/',
       routes: {
         '/': (context) => const BootstrapGate(),
@@ -253,8 +263,12 @@ class _SplashScreen extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return const Scaffold(
-      backgroundColor: Colors.black,
-      body: Center(child: CircularProgressIndicator()),
+      backgroundColor: CapColors.bgTop,
+      body: Center(
+        child: CircularProgressIndicator(
+          valueColor: AlwaysStoppedAnimation<Color>(CapColors.gold),
+        ),
+      ),
     );
   }
 }
@@ -265,17 +279,19 @@ class _RecoveryScreen extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: Colors.black,
+      backgroundColor: CapColors.bgTop,
       body: Center(
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            const CircularProgressIndicator(),
+            const CircularProgressIndicator(
+              valueColor: AlwaysStoppedAnimation<Color>(CapColors.gold),
+            ),
             const SizedBox(height: 16),
             const Text(
               'Hubo un problema iniciando.\nIntentando recuperar…',
               textAlign: TextAlign.center,
-              style: TextStyle(color: Colors.white70),
+              style: TextStyle(color: CapColors.textMuted),
             ),
             const SizedBox(height: 16),
             FilledButton(
@@ -325,36 +341,44 @@ class _OfflineSubscriptionGate extends StatelessWidget {
       builder: (context, snap) {
         if (snap.connectionState != ConnectionState.done) {
           return const Scaffold(
-            backgroundColor: Colors.black,
-            body: Center(child: CircularProgressIndicator()),
+            backgroundColor: CapColors.bgTop,
+            body: Center(
+              child: CircularProgressIndicator(
+                valueColor: AlwaysStoppedAnimation<Color>(CapColors.gold),
+              ),
+            ),
           );
         }
 
         if (snap.data == true) return child;
 
         return Scaffold(
-          backgroundColor: Colors.black,
+          backgroundColor: CapColors.bgTop,
           body: Center(
             child: Padding(
               padding: const EdgeInsets.all(20),
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  const Icon(Icons.lock_outline,
-                      color: Colors.orangeAccent, size: 60),
+                  const Icon(
+                    Icons.lock_outline,
+                    color: CapColors.gold,
+                    size: 60,
+                  ),
                   const SizedBox(height: 14),
                   const Text(
                     'Suscripción vencida',
                     style: TextStyle(
-                        color: Colors.white,
-                        fontSize: 20,
-                        fontWeight: FontWeight.w800),
+                      color: CapColors.text,
+                      fontSize: 20,
+                      fontWeight: FontWeight.w800,
+                    ),
                   ),
                   const SizedBox(height: 10),
                   const Text(
                     'Sin conexión no podemos validar/renovar tu acceso.\nConéctate para pagar y reactivar.',
                     textAlign: TextAlign.center,
-                    style: TextStyle(color: Colors.white70, height: 1.35),
+                    style: TextStyle(color: CapColors.textMuted, height: 1.35),
                   ),
                   const SizedBox(height: 16),
                   FilledButton(
@@ -402,13 +426,17 @@ class _DebugPingScreenState extends State<DebugPingScreen> {
   Widget build(BuildContext context) {
     final o = Firebase.app().options;
     return Scaffold(
+      backgroundColor: CapColors.bgTop,
       appBar: AppBar(title: const Text('Debug Ping')),
       body: Padding(
         padding: const EdgeInsets.all(16),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text('Proyecto: ${o.projectId}\nAppId: ${o.appId}'),
+            Text(
+              'Proyecto: ${o.projectId}\nAppId: ${o.appId}',
+              style: const TextStyle(color: CapColors.text),
+            ),
             const SizedBox(height: 12),
             FilledButton.icon(
               onPressed: _runPing,
@@ -416,7 +444,13 @@ class _DebugPingScreenState extends State<DebugPingScreen> {
               label: const Text('Probar ping'),
             ),
             const SizedBox(height: 12),
-            Text(_result, style: const TextStyle(fontFamily: 'monospace')),
+            Text(
+              _result,
+              style: const TextStyle(
+                fontFamily: 'monospace',
+                color: CapColors.textMuted,
+              ),
+            ),
           ],
         ),
       ),

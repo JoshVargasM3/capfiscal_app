@@ -1,15 +1,20 @@
 ﻿<?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <!-- Tema de arranque (mientras Flutter inicia) -->
-    <style name="LaunchTheme" parent="Theme.MaterialComponents.DayNight.NoActionBar.Bridge">
-        <item name="android:windowBackground">@color/splash_background</item>
-    </style>
+    <!-- CAPFISCAL palette (igual a lib/theme/cap_colors.dart) -->
+    <color name="cap_bg_top">#FF0A0A0B</color>
+    <color name="cap_bg_mid">#FF2A2A2F</color>
+    <color name="cap_bg_bottom">#FF4A4A50</color>
 
-    <!-- Tema normal (cuando Flutter ya está listo) -->
-    <style name="NormalTheme" parent="Theme.MaterialComponents.DayNight.NoActionBar.Bridge">
-        <item name="android:windowBackground">@android:color/white</item>
-        <!-- Opcional: asegúrate de tener un colorPrimary/Secondary -->
-        <item name="colorPrimary">@color/colorPrimary</item>
-        <item name="colorSecondary">@color/colorSecondary</item>
-    </style>
+    <color name="cap_surface">#FF1C1C21</color>
+    <color name="cap_surface_alt">#FF2A2A2F</color>
+
+    <color name="cap_gold">#FFE1B85C</color>
+    <color name="cap_gold_dark">#FFB88F30</color>
+
+    <!-- Android 12+ splash requiere color sólido -->
+    <color name="splash_background">@color/cap_bg_top</color>
+
+    <!-- Para themes nativos -->
+    <color name="colorPrimary">@color/cap_gold</color>
+    <color name="colorSecondary">@color/cap_gold_dark</color>
 </resources>
