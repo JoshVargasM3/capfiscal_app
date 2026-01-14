@@ -1,15 +1,13 @@
 // lib/screens/subscription_required_screen.dart
 import 'dart:async';
-import 'dart:convert';
-
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:url_launcher/url_launcher.dart';
-import 'package:http/http.dart' as http;
-import 'package:flutter_stripe/flutter_stripe.dart';
+import 'package:in_app_purchase/in_app_purchase.dart';
 
 import '../config/subscription_config.dart';
+import '../services/in_app_purchase_service.dart';
 import '../services/payment_service.dart';
 import '../services/subscription_service.dart';
 
@@ -39,11 +37,16 @@ class _SubscriptionRequiredScreenState extends State<SubscriptionRequiredScreen>
   bool _processingPayment = false;
   bool _waitingCheckoutResult = false;
   bool _sawCheckoutTransition = false;
+  bool _iapLoading = false;
+  bool _iapAvailable = false;
+  String? _iapError;
 
   final SubscriptionPaymentService _paymentService =
       SubscriptionPaymentService.instance;
+  final InAppPurchaseService _iapService = InAppPurchaseService();
+  StreamSubscription<List<PurchaseDetails>>? _iapSubscription;
+  ProductDetails? _iapProduct;
 
-  static const int _planPriceCents = 19900; // $199.00 MXN
   static const int _durationDays = 30;
 
   static const _bgTop = Color(0xFF0A0A0B);
@@ -83,6 +86,9 @@ class _SubscriptionRequiredScreenState extends State<SubscriptionRequiredScreen>
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     _autoRedirectIfNowActive();
+    if (!kIsWeb) {
+      _initIap();
+    }
   }
 
   @override
@@ -96,6 +102,7 @@ class _SubscriptionRequiredScreenState extends State<SubscriptionRequiredScreen>
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    _iapSubscription?.cancel();
     super.dispose();
   }
 
@@ -283,106 +290,117 @@ class _SubscriptionRequiredScreenState extends State<SubscriptionRequiredScreen>
     }
   }
 
-  Future<void> _startPaymentWithPaymentSheet() async {
-    if (_processingPayment) return;
+  Future<void> _initIap() async {
+    setState(() {
+      _iapLoading = true;
+      _iapError = null;
+    });
 
-    final user = FirebaseAuth.instance.currentUser;
-    if (user == null) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Inicia sesión para completar el pago.')),
-      );
+    final productId = SubscriptionConfig.storeProductId;
+    if (productId.isEmpty) {
+      setState(() {
+        _iapLoading = false;
+        _iapAvailable = false;
+        _iapError = 'Configura el Product ID para la suscripción.';
+      });
       return;
     }
 
-    setState(() => _processingPayment = true);
+    final available = await _iapService.isAvailable();
+    if (!available) {
+      setState(() {
+        _iapLoading = false;
+        _iapAvailable = false;
+        _iapError = 'La tienda no está disponible en este dispositivo.';
+      });
+      return;
+    }
 
+    final response = await _iapService.loadProducts({productId});
+    if (response.error != null || response.productDetails.isEmpty) {
+      setState(() {
+        _iapLoading = false;
+        _iapAvailable = false;
+        _iapError = response.error?.message ??
+            'No pudimos cargar el producto de suscripción.';
+      });
+      return;
+    }
+
+    _iapSubscription?.cancel();
+    _iapSubscription = _iapService.purchaseStream.listen(
+      _handlePurchaseUpdates,
+      onError: (Object error) {
+        if (!mounted) return;
+        setState(() {
+          _processingPayment = false;
+          _iapError = error.toString();
+        });
+      },
+    );
+
+    setState(() {
+      _iapLoading = false;
+      _iapAvailable = true;
+      _iapProduct = response.productDetails.first;
+    });
+  }
+
+  Future<void> _handlePurchaseUpdates(
+    List<PurchaseDetails> purchases,
+  ) async {
+    for (final purchase in purchases) {
+      switch (purchase.status) {
+        case PurchaseStatus.pending:
+          if (mounted) {
+            setState(() => _processingPayment = true);
+          }
+          break;
+        case PurchaseStatus.purchased:
+        case PurchaseStatus.restored:
+          await _confirmIapPurchase(purchase);
+          break;
+        case PurchaseStatus.error:
+          if (!mounted) return;
+          setState(() => _processingPayment = false);
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text(
+                purchase.error?.message ??
+                    'No se pudo completar la compra en tienda.',
+              ),
+            ),
+          );
+          break;
+        case PurchaseStatus.canceled:
+          if (mounted) {
+            setState(() => _processingPayment = false);
+          }
+          break;
+      }
+
+      await _iapService.completePurchaseIfNeeded(purchase);
+    }
+  }
+
+  Future<void> _confirmIapPurchase(PurchaseDetails purchase) async {
     try {
-      final email = user.email ?? '${user.uid}@capfiscal.local';
-
-      final paymentUrl = SubscriptionConfig.stripePaymentIntentUrl;
-      if (paymentUrl.isEmpty) {
-        throw StateError(
-          'Configura STRIPE_PAYMENT_INTENT_URL para iniciar el pago.',
-        );
-      }
-
-      final idToken = await user.getIdToken(true);
-
-      final resp = await http.post(
-        Uri.parse(paymentUrl),
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': 'Bearer $idToken',
-        },
-        body: jsonEncode({
-          'amount': _planPriceCents,
-          'currency': 'mxn',
-          'email': email,
-          'uid': user.uid,
-          'description': 'Suscripción mensual CAPFISCAL',
-          'metadata': {'uid': user.uid, 'type': 'subscription_payment'},
-        }),
-      );
-
-      if (resp.statusCode != 200) {
-        throw Exception('Stripe init falló: ${resp.body}');
-      }
-
-      final Map<String, dynamic> data =
-          jsonDecode(resp.body) as Map<String, dynamic>;
-      if (data['success'] != true) {
-        throw Exception('Stripe init falló: ${data['error']}');
-      }
-
-      final clientSecret = data['paymentIntent'] as String?;
-      final customerId = data['customer'] as String?;
-      final ephemeralKey = data['ephemeralKey'] as String?;
-
-      if (clientSecret == null || customerId == null || ephemeralKey == null) {
-        throw Exception(
-          'Respuesta incompleta del servidor: faltan llaves de Stripe.',
-        );
-      }
-
-      await Stripe.instance.initPaymentSheet(
-        paymentSheetParameters: SetupPaymentSheetParameters(
-          merchantDisplayName: SubscriptionConfig.merchantDisplayName,
-          paymentIntentClientSecret: clientSecret,
-          customerId: customerId,
-          customerEphemeralKeySecret: ephemeralKey,
-          allowsDelayedPaymentMethods: true,
-        ),
-      );
-
-      await Stripe.instance.presentPaymentSheet();
-
-      await SubscriptionService().applyLocalPaymentSuccess(
-        user.uid,
-        paymentMethod: 'Stripe PaymentSheet',
+      final storeLabel =
+          _iapService.formatStoreLabel(defaultTargetPlatform);
+      await _paymentService.activateHostedCheckout(
         durationDays: _durationDays,
+        paymentMethod: 'IAP ($storeLabel)',
+        statusOverride: 'active',
       );
-
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Pago realizado correctamente.')),
+        const SnackBar(content: Text('Suscripción activada correctamente.')),
       );
-
-      // ✅ refresca y manda a home si ya quedó activo
       await _goHomeIfActive();
-    } on StripeException catch (e) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(
-            'Pago cancelado o fallido: ${e.error.localizedMessage ?? e.error.message ?? e.toString()}',
-          ),
-        ),
-      );
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('No pudimos procesar el pago: $e')),
+        SnackBar(content: Text('No pudimos activar tu suscripción: $e')),
       );
     } finally {
       if (mounted) setState(() => _processingPayment = false);
@@ -393,7 +411,17 @@ class _SubscriptionRequiredScreenState extends State<SubscriptionRequiredScreen>
     if (_processingPayment || _waitingCheckoutResult) return;
 
     if (!kIsWeb) {
-      return _startPaymentWithPaymentSheet();
+      if (_iapProduct == null) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('La suscripción en tienda aún no está lista.'),
+          ),
+        );
+        return;
+      }
+      setState(() => _processingPayment = true);
+      await _iapService.buySubscription(_iapProduct!);
+      return;
     }
 
     if (!SubscriptionConfig.hasCheckoutConfiguration) {
@@ -488,7 +516,8 @@ class _SubscriptionRequiredScreenState extends State<SubscriptionRequiredScreen>
     final showPaymentSection = status.state == SubscriptionState.none ||
         status.state == SubscriptionState.expired;
 
-    final hasMobilePay = SubscriptionConfig.hasPaymentSheetConfiguration;
+    final hasMobilePay =
+        SubscriptionConfig.storeProductId.isNotEmpty && _iapAvailable;
     final hasWebPay = SubscriptionConfig.hasCheckoutConfiguration;
 
     final showPaymentButton =
@@ -640,7 +669,7 @@ class _SubscriptionRequiredScreenState extends State<SubscriptionRequiredScreen>
                                           : const Icon(Icons.credit_card),
                                   label: Text(
                                     _processingPayment
-                                        ? 'Abriendo pago…'
+                                        ? 'Procesando compra…'
                                         : _waitingCheckoutResult
                                             ? 'Esperando confirmación…'
                                             : 'Pagar y activar',
@@ -668,7 +697,10 @@ class _SubscriptionRequiredScreenState extends State<SubscriptionRequiredScreen>
                                 child: Text(
                                   kIsWeb
                                       ? 'Configura STRIPE_CHECKOUT_URL para habilitar el botón de pago en Web.'
-                                      : 'Define STRIPE_PUBLISHABLE_KEY y STRIPE_PAYMENT_INTENT_URL para habilitar PaymentSheet en Android/iOS.',
+                                      : _iapLoading
+                                          ? 'Preparando la tienda para pagos…'
+                                          : (_iapError ??
+                                              'Define ANDROID_SUBSCRIPTION_ID y IOS_SUBSCRIPTION_ID para habilitar compras en app.'),
                                   style: const TextStyle(
                                     color: Color(0xFFBEBEC6),
                                     fontSize: 13,

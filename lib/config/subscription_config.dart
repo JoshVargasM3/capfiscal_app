@@ -33,6 +33,14 @@ class SubscriptionConfig {
   /// Bundle id iOS si necesitas formar links específicos.
   static const String iosBundleId = String.fromEnvironment('IOS_BUNDLE_ID');
 
+  /// Product ID para suscripción en Google Play.
+  static const String androidSubscriptionProductId =
+      String.fromEnvironment('ANDROID_SUBSCRIPTION_ID');
+
+  /// Product ID para suscripción en App Store.
+  static const String iosSubscriptionProductId =
+      String.fromEnvironment('IOS_SUBSCRIPTION_ID');
+
   /// ¿Tenemos config suficiente para PaymentSheet (móvil)?
   static bool get hasPaymentSheetConfiguration =>
       stripePublishableKey.isNotEmpty && stripePaymentIntentUrl.isNotEmpty;
@@ -53,6 +61,27 @@ class SubscriptionConfig {
   /// (Histórico) ¿ambas llaves para flujos antiguos?
   static bool get hasStripeConfiguration =>
       stripePublishableKey.isNotEmpty && stripePriceId.isNotEmpty;
+
+  /// ¿Tenemos configuración de IAP por plataforma?
+  static bool get hasIapConfiguration =>
+      androidSubscriptionProductId.isNotEmpty ||
+      iosSubscriptionProductId.isNotEmpty;
+
+  /// Product ID correcto según plataforma actual.
+  static String get storeProductId {
+    if (kIsWeb) return '';
+    switch (defaultTargetPlatform) {
+      case TargetPlatform.android:
+        return androidSubscriptionProductId;
+      case TargetPlatform.iOS:
+        return iosSubscriptionProductId;
+      case TargetPlatform.fuchsia:
+      case TargetPlatform.linux:
+      case TargetPlatform.macOS:
+      case TargetPlatform.windows:
+        return '';
+    }
+  }
 
   /// Log en debug.
   static void debugLog(String message) {
