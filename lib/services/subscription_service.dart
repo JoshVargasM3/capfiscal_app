@@ -50,7 +50,8 @@ class StoredPaymentMethod {
       };
 }
 
-/// Parsed subscription information kept in the user document.
+/// Parsed subscription information kept in the user document (legacy)
+/// OR coming from Stripe extension (customers/{uid}/subscriptions).
 class SubscriptionStatus {
   SubscriptionStatus({
     this.startDate,
@@ -83,7 +84,7 @@ class SubscriptionStatus {
 
   final List<StoredPaymentMethod> paymentMethods;
 
-  /// Manual override value stored in Firestore (`subscription.status`).
+  /// Manual override value stored in Firestore (`subscription.status`) (legacy).
   final String? statusOverride;
 
   /// Timestamp of the last backend update.
@@ -95,24 +96,130 @@ class SubscriptionStatus {
   factory SubscriptionStatus.empty() =>
       SubscriptionStatus(checkedAt: DateTime.now().toUtc());
 
+  // ---------------------------
+  // ✅ NUEVO: Stripe Extension parser
+  // ---------------------------
+  factory SubscriptionStatus.fromStripeSubscriptionDocs(
+    List<QueryDocumentSnapshot<Map<String, dynamic>>> docs, {
+    String? stripeCustomerId,
+  }) {
+    if (docs.isEmpty) {
+      return SubscriptionStatus(
+        stripeCustomerId: stripeCustomerId,
+        checkedAt: DateTime.now().toUtc(),
+        raw: const <String, dynamic>{},
+      );
+    }
+
+    // Elegimos el “mejor” doc: prioriza active/trialing, luego el de mayor periodo end
+    QueryDocumentSnapshot<Map<String, dynamic>>? best;
+    int bestScore = -1;
+    DateTime bestEnd = DateTime.fromMillisecondsSinceEpoch(0, isUtc: true);
+
+    for (final d in docs) {
+      final data = d.data();
+      final stripeStatus =
+          (_parseString(data['status']) ?? '').trim().toLowerCase();
+
+      final end = _parseDate(
+            data['current_period_end'] ??
+                data['currentPeriodEnd'] ??
+                data['current_period_end_at'],
+          ) ??
+          _parseDate(data['cancel_at']) ??
+          _parseDate(data['ended_at']) ??
+          _parseDate(data['canceled_at']);
+
+      final endSafe =
+          end ?? DateTime.fromMillisecondsSinceEpoch(0, isUtc: true);
+
+      final score = _stripeStatusScore(stripeStatus) * 100000 +
+          endSafe.millisecondsSinceEpoch;
+
+      if (score > bestScore) {
+        bestScore = score;
+        best = d;
+        bestEnd = endSafe;
+      }
+    }
+
+    final chosen = best ?? docs.first;
+    final data = chosen.data();
+
+    final stripeStatus =
+        (_parseString(data['status']) ?? '').trim().toLowerCase();
+    final cancelAtPeriodEnd = (data['cancel_at_period_end'] as bool?) ??
+        (data['cancelAtPeriodEnd'] as bool?) ??
+        false;
+
+    final start = _parseDate(
+      data['current_period_start'] ?? data['currentPeriodStart'],
+    );
+
+    final end = _parseDate(
+          data['current_period_end'] ?? data['currentPeriodEnd'],
+        ) ??
+        bestEnd;
+
+    final cancelsAt = cancelAtPeriodEnd ? end : _parseDate(data['cancel_at']);
+
+    // ✅ Método de pago (best-effort; depende de lo que Stripe guarde en el doc)
+    final pm = _inferPaymentMethodLabelFromStripeDoc(data);
+
+    // ✅ “pending” si Stripe está en incomplete/incomplete_expired
+    String? statusOverride;
+    if (stripeStatus == 'incomplete' || stripeStatus == 'incomplete_expired') {
+      statusOverride = 'pending';
+    }
+
+    // updatedAt: intenta tomar algo del doc, si existe
+    final updatedAt = _parseDate(data['updated_at'] ?? data['updatedAt']);
+
+    // subscription id
+    final subId = _parseString(data['id']) ??
+        _parseString(data['stripeSubscriptionId']) ??
+        chosen.id;
+
+    return SubscriptionStatus(
+      startDate: start,
+      endDate: end,
+      graceEndsAt:
+          null, // Stripe no maneja “grace” como campo; si quieres, la calculas aparte.
+      paymentMethod: pm,
+      statusOverride: statusOverride, // solo usamos pending aquí
+      updatedAt: updatedAt,
+      cancelAtPeriodEnd: cancelAtPeriodEnd,
+      cancelsAt: cancelsAt,
+      stripeSubscriptionId: subId,
+      stripeCustomerId: stripeCustomerId,
+      paymentMethods: const <StoredPaymentMethod>[], // Stripe Portal es el UI, no lista local
+      raw: <String, dynamic>{
+        ...data,
+        '__docId': chosen.id,
+        '__stripeStatus': stripeStatus,
+      },
+    );
+  }
+
+  // ---------------------------
+  // Legacy factories (users/{uid})
+  // ---------------------------
   factory SubscriptionStatus.fromSnapshot(
     DocumentSnapshot<Map<String, dynamic>> snapshot,
   ) {
     final data = snapshot.data() ?? const <String, dynamic>{};
-    return _fromMap(data);
+    return _fromUserDocMap(data);
   }
 
   factory SubscriptionStatus.fromUserData(Map<String, dynamic> data) {
-    return _fromMap(data);
+    return _fromUserDocMap(data);
   }
 
-  static SubscriptionStatus _fromMap(Map<String, dynamic> data) {
+  static SubscriptionStatus _fromUserDocMap(Map<String, dynamic> data) {
     final Map<String, dynamic> sub = (data['subscription'] is Map)
         ? Map<String, dynamic>.from(data['subscription'] as Map)
         : <String, dynamic>{};
 
-    // ✅ PRIORIDAD: SIEMPRE usa el mapa real `subscription.{field}`.
-    // Fallback solo si no existe (compat con campos legacy top-level "subscription.endDate", etc.)
     final startDate = _parseDate(sub['startDate']) ??
         _parseDate(data['subscription.startDate']);
     final endDate =
@@ -175,6 +282,8 @@ class SubscriptionStatus {
       graceEndsAt != null ||
       paymentMethod != null ||
       statusOverride != null ||
+      stripeSubscriptionId != null ||
+      stripeCustomerId != null ||
       paymentMethods.isNotEmpty;
 
   String? get _statusLower => statusOverride?.trim().toLowerCase();
@@ -182,7 +291,7 @@ class SubscriptionStatus {
   bool get isBlocked => _statusLower == 'blocked';
   bool get isPending => _statusLower == 'pending';
 
-  /// ✅ Override real SOLO para soporte. (No uses "active" como override, porque ignoras endDate)
+  /// ✅ Override real SOLO para soporte.
   bool get isManuallyActive => _statusLower == 'manual_active';
 
   bool get isActive =>
@@ -223,12 +332,63 @@ class SubscriptionStatus {
   }
 }
 
-/// Centralised helper to interact with subscription metadata stored in Firestore.
+/// Centralised helper to interact with subscription metadata.
+/// ✅ Para “Stripe como source of truth”, usa /customers/{uid}/subscriptions.
 class SubscriptionService {
   SubscriptionService({FirebaseFirestore? firestore})
       : _firestore = firestore ?? FirebaseFirestore.instance;
 
   final FirebaseFirestore _firestore;
+
+  // ---------------------------
+  // ✅ Stripe source of truth
+  // ---------------------------
+
+  Stream<SubscriptionStatus> watchSubscriptionStatus(String uid) {
+    final customerRef = _firestore.collection('customers').doc(uid);
+    final subsRef = customerRef.collection('subscriptions');
+
+    return subsRef.snapshots().asyncMap((qs) async {
+      String? stripeCustomerId;
+      try {
+        final cs = await customerRef.get();
+        final cdata = cs.data() ?? const <String, dynamic>{};
+        stripeCustomerId = _parseString(
+          cdata['stripeId'] ?? cdata['id'] ?? cdata['customer_id'],
+        );
+      } catch (_) {}
+
+      return SubscriptionStatus.fromStripeSubscriptionDocs(
+        qs.docs,
+        stripeCustomerId: stripeCustomerId,
+      );
+    });
+  }
+
+  Future<SubscriptionStatus> refreshSubscriptionStatus(String uid) async {
+    final customerRef = _firestore.collection('customers').doc(uid);
+    final subsRef = customerRef.collection('subscriptions');
+
+    final qs = await subsRef.get(const GetOptions(source: Source.server));
+
+    String? stripeCustomerId;
+    try {
+      final cs = await customerRef.get(const GetOptions(source: Source.server));
+      final cdata = cs.data() ?? const <String, dynamic>{};
+      stripeCustomerId = _parseString(
+        cdata['stripeId'] ?? cdata['id'] ?? cdata['customer_id'],
+      );
+    } catch (_) {}
+
+    return SubscriptionStatus.fromStripeSubscriptionDocs(
+      qs.docs,
+      stripeCustomerId: stripeCustomerId,
+    );
+  }
+
+  // ---------------------------
+  // Legacy helpers (users/{uid}) - si aún los ocupas en otra parte
+  // ---------------------------
 
   static Future<void> ensureUserDoc(User user) async {
     final ref = FirebaseFirestore.instance.collection('users').doc(user.uid);
@@ -244,20 +404,19 @@ class SubscriptionService {
     }
   }
 
-  Stream<SubscriptionStatus> watchSubscriptionStatus(String uid) {
+  // ⚠️ OJO: este stream YA NO se usa para gating si usas SubscriptionScope con Stripe.
+  Stream<SubscriptionStatus> watchLegacyUserDocSubscription(String uid) {
     return _userDoc(uid).snapshots().map(SubscriptionStatus.fromSnapshot);
   }
 
-  Future<SubscriptionStatus> refreshSubscriptionStatus(String uid) async {
-    final snapshot =
-        await _userDoc(uid).get(const GetOptions(source: Source.server));
-    if (!snapshot.exists) {
-      throw StateError('El perfil de usuario no existe en la base de datos.');
-    }
-    return SubscriptionStatus.fromSnapshot(snapshot);
+  DocumentReference<Map<String, dynamic>> _userDoc(String uid) {
+    return _firestore.collection('users').doc(uid);
   }
 
-  /// Patch local tras pago exitoso.
+  // ---------------------------
+  // Legacy writers (los dejo intactos por compatibilidad, pero idealmente NO usarlos)
+  // ---------------------------
+
   Future<void> applyLocalPaymentSuccess(
     String uid, {
     String paymentMethod = 'Stripe PaymentSheet',
@@ -278,7 +437,6 @@ class SubscriptionService {
     );
   }
 
-  /// Patch local tras pago pendiente.
   Future<void> applyLocalPaymentPending(
     String uid, {
     String paymentMethod = 'Stripe PaymentSheet',
@@ -299,8 +457,6 @@ class SubscriptionService {
     );
   }
 
-  /// Updates ONLY provided fields (nested under subscription.*)
-  /// + Limpia campos legacy top-level cuyo nombre literal incluye punto.
   Future<void> updateSubscription(
     String uid, {
     DateTime? startDate,
@@ -325,7 +481,6 @@ class SubscriptionService {
   }) async {
     final ref = _userDoc(uid);
 
-    // ✅ update() permite keys String (paths) y FieldPath (para borrar legacy).
     final updates = <Object, Object?>{};
 
     if (startDate != null) {
@@ -395,8 +550,6 @@ class SubscriptionService {
       updates['updatedAt'] = FieldValue.serverTimestamp();
     }
 
-    // ✅ Limpieza de legacy fields (TOP-LEVEL) cuyo nombre literal incluye punto.
-    // En consola se ven como:  subscription.endDate  (no dentro del mapa subscription)
     void _delLegacy(String literal) {
       updates[FieldPath([literal])] = FieldValue.delete();
     }
@@ -421,8 +574,6 @@ class SubscriptionService {
       await ref.update(updates);
     } on FirebaseException catch (e) {
       if (e.code == 'not-found') {
-        // ✅ FIX: set() solo acepta Map<String,dynamic> y NO soporta FieldPath keys.
-        // Creamos el doc con un set mínimo y luego aplicamos el update real.
         await ref.set(
           <String, dynamic>{
             'createdAt': FieldValue.serverTimestamp(),
@@ -436,10 +587,65 @@ class SubscriptionService {
       }
     }
   }
+}
 
-  DocumentReference<Map<String, dynamic>> _userDoc(String uid) {
-    return _firestore.collection('users').doc(uid);
+// ---------------------------
+// Helpers
+// ---------------------------
+
+int _stripeStatusScore(String s) {
+  switch (s) {
+    case 'active':
+    case 'trialing':
+      return 3;
+    case 'past_due':
+    case 'unpaid':
+      return 2;
+    case 'incomplete':
+    case 'incomplete_expired':
+      return 1;
+    default:
+      return 0;
   }
+}
+
+String? _inferPaymentMethodLabelFromStripeDoc(Map<String, dynamic> data) {
+  // Best-effort: depende del shape que tengas guardado por la extensión.
+  // Si no existe, devolvemos algo genérico para que “se note” que viene de Stripe.
+  final dpm = data['default_payment_method'] ?? data['defaultPaymentMethod'];
+  if (dpm is String && dpm.trim().isNotEmpty) {
+    return 'Stripe ($dpm)';
+  }
+  if (dpm is Map) {
+    final m = Map<String, dynamic>.from(dpm);
+    final card = m['card'];
+    if (card is Map) {
+      final c = Map<String, dynamic>.from(card);
+      final brand = _parseString(c['brand'])?.toUpperCase();
+      final last4 = _parseString(c['last4']);
+      if ((brand ?? '').isNotEmpty && (last4 ?? '').isNotEmpty) {
+        return '$brand •••• $last4';
+      }
+      if ((brand ?? '').isNotEmpty) return brand;
+    }
+  }
+
+  // A veces viene como “payment_method_details”
+  final pmd = data['payment_method_details'];
+  if (pmd is Map) {
+    final m = Map<String, dynamic>.from(pmd);
+    final card = m['card'];
+    if (card is Map) {
+      final c = Map<String, dynamic>.from(card);
+      final brand = _parseString(c['brand'])?.toUpperCase();
+      final last4 = _parseString(c['last4']);
+      if ((brand ?? '').isNotEmpty && (last4 ?? '').isNotEmpty) {
+        return '$brand •••• $last4';
+      }
+    }
+  }
+
+  return 'Gestionado por Stripe';
 }
 
 DateTime? _parseDate(dynamic value) {

@@ -1,4 +1,3 @@
-// lib/screens/biblioteca_legal_screen.dart
 import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:firebase_storage/firebase_storage.dart';
@@ -11,8 +10,6 @@ import '../widgets/file_grid_card.dart';
 import '../widgets/app_top_bar.dart';
 import '../widgets/app_bottom_nav.dart';
 import '../widgets/custom_drawer.dart';
-
-import '../helpers/subscription_guard.dart';
 
 import '../helpers/favorites_manager.dart';
 import '../helpers/view_mode.dart';
@@ -114,7 +111,8 @@ class _BibliotecaLegalScreenState extends State<BibliotecaLegalScreen> {
   }
 
   Future<void> _downloadAndOpenFile(Reference ref) async {
-    if (!await SubscriptionGuard.ensureActive(context)) return;
+    // ✅ FIX: ya no validamos aquí con SubscriptionGuard.
+    // La ruta /biblioteca ya está protegida por SubscriptionGate (Stripe/Firestore).
     try {
       final dir = await getApplicationDocumentsDirectory();
       final file = File('${dir.path}/${ref.name}');

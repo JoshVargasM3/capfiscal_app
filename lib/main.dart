@@ -31,6 +31,9 @@ import 'screens/offline_home_screen.dart';
 import 'services/connectivity_service.dart';
 import 'services/subscription_service.dart'; // para enum en offline gate
 
+// ✅ NUEVO: Scope global
+import 'widgets/subscription_scope_host.dart';
+
 Future<void> main() async {
   await runZonedGuarded(() async {
     WidgetsFlutterBinding.ensureInitialized();
@@ -99,6 +102,13 @@ class MyApp extends StatelessWidget {
       theme: CapTheme.dark,
       darkTheme: CapTheme.dark,
       themeMode: ThemeMode.dark,
+
+      // ✅ NUEVO: pone SubscriptionScope arriba de TODAS las rutas/pantallas
+      builder: (context, child) {
+        return SubscriptionScopeHost(
+          child: child ?? const SizedBox.shrink(),
+        );
+      },
 
       initialRoute: '/',
       routes: {

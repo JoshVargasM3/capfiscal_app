@@ -1,9 +1,8 @@
-// lib/widgets/custom_drawer.dart
 import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
 
 import '../services/subscription_service.dart';
-import 'subscription_scope.dart';
 
 class CustomDrawer extends StatefulWidget {
   const CustomDrawer({super.key});
@@ -21,6 +20,32 @@ class CustomDrawer extends StatefulWidget {
 }
 
 class _CustomDrawerState extends State<CustomDrawer> {
+  // 🔥 Override (resultado confirmado del server)
+  SubscriptionStatus? _serverOverride;
+  bool _forcingServer = false;
+  String? _lastForcedUid;
+
+  Future<void> _forceServerOnce(String uid) async {
+    if (_forcingServer) return;
+    // evita repetir si ya forzamos este uid y ya tenemos override reciente
+    if (_lastForcedUid == uid && _serverOverride != null) return;
+
+    _forcingServer = true;
+    _lastForcedUid = uid;
+
+    try {
+      final ref = FirebaseFirestore.instance.collection('users').doc(uid);
+      final snap = await ref.get(const GetOptions(source: Source.server));
+      final status = SubscriptionStatus.fromSnapshot(snap);
+      if (!mounted) return;
+      setState(() => _serverOverride = status);
+    } catch (_) {
+      // si falla, no reventamos UI
+    } finally {
+      _forcingServer = false;
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final current = ModalRoute.of(context)?.settings.name;
@@ -38,23 +63,14 @@ class _CustomDrawerState extends State<CustomDrawer> {
         .map((p) => p[0].toUpperCase() + p.substring(1))
         .join(' ');
 
-    final subscriptionScope = SubscriptionScope.maybeOf(context);
-    final subscriptionStatus = subscriptionScope?.status;
-
     // Navegación segura desde el Drawer
     void go(String route) {
       final navigator = Navigator.of(context);
       final currentRoute = current;
 
-      // 1) Cierra el drawer primero
-      if (navigator.canPop()) {
-        navigator.pop();
-      }
-
-      // 2) Evita re-navegar a la misma ruta
+      if (navigator.canPop()) navigator.pop();
       if (currentRoute == route) return;
 
-      // 3) Navega en el siguiente frame (evita usar un context desmontado)
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (!mounted) return;
         Navigator.of(context, rootNavigator: true).pushReplacementNamed(route);
@@ -62,27 +78,22 @@ class _CustomDrawerState extends State<CustomDrawer> {
     }
 
     Future<void> signOut() async {
-      // Cierra el Drawer primero para no dejar context colgando
       if (Navigator.of(context).canPop()) {
         Navigator.of(context).pop();
       }
-
       try {
         await FirebaseAuth.instance.signOut();
       } catch (e) {
-        // Si el Drawer ya se desmontó, evita usar el context
         if (!mounted) return;
         ScaffoldMessenger.maybeOf(context)?.showSnackBar(
           SnackBar(content: Text('No se pudo cerrar sesión: $e')),
         );
         return;
       }
-
-      // Resetea el stack usando el *root navigator* en el siguiente frame
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (!mounted) return;
         Navigator.of(context, rootNavigator: true)
-            .pushNamedAndRemoveUntil('/login', (r) => false); // o '/'
+            .pushNamedAndRemoveUntil('/login', (r) => false);
       });
     }
 
@@ -91,15 +102,12 @@ class _CustomDrawerState extends State<CustomDrawer> {
         context: context,
         builder: (dialogContext) => AlertDialog(
           backgroundColor: CustomDrawer._surface,
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(12),
-          ),
+          shape:
+              RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
           title: const Text(
             'Cerrar sesión',
             style: TextStyle(
-              color: CustomDrawer._text,
-              fontWeight: FontWeight.w800,
-            ),
+                color: CustomDrawer._text, fontWeight: FontWeight.w800),
           ),
           content: const Text(
             '¿Seguro que deseas cerrar tu sesión?',
@@ -114,8 +122,7 @@ class _CustomDrawerState extends State<CustomDrawer> {
                 padding:
                     const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
                 shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(10),
-                ),
+                    borderRadius: BorderRadius.circular(10)),
               ),
               onPressed: () => Navigator.of(dialogContext).pop(false),
               child: const Text('Cancelar'),
@@ -127,8 +134,7 @@ class _CustomDrawerState extends State<CustomDrawer> {
                 padding:
                     const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
                 shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(10),
-                ),
+                    borderRadius: BorderRadius.circular(10)),
               ),
               onPressed: () => Navigator.of(dialogContext).pop(true),
               icon: const Icon(Icons.logout),
@@ -139,9 +145,7 @@ class _CustomDrawerState extends State<CustomDrawer> {
       );
 
       if (!mounted) return;
-      if (ok == true) {
-        await signOut();
-      }
+      if (ok == true) await signOut();
     }
 
     Widget navItem({
@@ -167,11 +171,9 @@ class _CustomDrawerState extends State<CustomDrawer> {
           ),
           child: Row(
             children: [
-              Icon(
-                icon,
-                color: selected ? CustomDrawer._gold : CustomDrawer._text,
-                size: 22,
-              ),
+              Icon(icon,
+                  color: selected ? CustomDrawer._gold : CustomDrawer._text,
+                  size: 22),
               const SizedBox(width: 10),
               Expanded(
                 child: Text(
@@ -184,18 +186,17 @@ class _CustomDrawerState extends State<CustomDrawer> {
                   ),
                 ),
               ),
-              Icon(
-                Icons.chevron_right,
-                color: selected ? CustomDrawer._gold : CustomDrawer._textMuted,
-                size: 20,
-              ),
+              Icon(Icons.chevron_right,
+                  color:
+                      selected ? CustomDrawer._gold : CustomDrawer._textMuted,
+                  size: 20),
             ],
           ),
         ),
       );
     }
 
-    final width = MediaQuery.of(context).size.width * 0.70; // 70%
+    final width = MediaQuery.of(context).size.width * 0.70;
 
     return Drawer(
       elevation: 16,
@@ -230,7 +231,6 @@ class _CustomDrawerState extends State<CustomDrawer> {
                     child: Row(
                       crossAxisAlignment: CrossAxisAlignment.center,
                       children: [
-                        // 👇 Navega a /perfil al tocar la foto
                         InkWell(
                           onTap: () => go('/perfil'),
                           borderRadius: BorderRadius.circular(48),
@@ -243,11 +243,8 @@ class _CustomDrawerState extends State<CustomDrawer> {
                                 : null,
                             child: (user?.photoURL == null ||
                                     (user?.photoURL?.isEmpty ?? true))
-                                ? const Icon(
-                                    Icons.person,
-                                    color: CustomDrawer._text,
-                                    size: 56,
-                                  )
+                                ? const Icon(Icons.person,
+                                    color: CustomDrawer._text, size: 56)
                                 : null,
                           ),
                         ),
@@ -288,11 +285,57 @@ class _CustomDrawerState extends State<CustomDrawer> {
                                   ),
                                 ),
                               ],
-                              if (subscriptionStatus != null) ...[
+
+                              // ✅ Badge con cache-aware + server override
+                              if (user != null) ...[
                                 const SizedBox(height: 10),
-                                _SubscriptionBadge(
-                                  status: subscriptionStatus,
-                                  onRefresh: subscriptionScope?.onRefresh,
+                                StreamBuilder<
+                                    DocumentSnapshot<Map<String, dynamic>>>(
+                                  stream: FirebaseFirestore.instance
+                                      .collection('users')
+                                      .doc(user.uid)
+                                      .snapshots(includeMetadataChanges: true),
+                                  builder: (context, snap) {
+                                    final nowUtc = DateTime.now().toUtc();
+                                    final fromCache =
+                                        snap.data?.metadata.isFromCache ?? true;
+
+                                    SubscriptionStatus parsed =
+                                        SubscriptionStatus.empty();
+                                    if (snap.hasData) {
+                                      parsed = SubscriptionStatus.fromSnapshot(
+                                          snap.data!);
+                                    }
+
+                                    // ✅ Si llega de cache y sale vencida/none, forzamos server una vez
+                                    final looksWrong = parsed.state ==
+                                            SubscriptionState.expired ||
+                                        parsed.state == SubscriptionState.none;
+
+                                    if (fromCache && looksWrong) {
+                                      // dispara en el próximo frame para no llamar durante build
+                                      WidgetsBinding.instance
+                                          .addPostFrameCallback((_) {
+                                        if (!mounted) return;
+                                        _forceServerOnce(user.uid);
+                                      });
+                                    }
+
+                                    final status = _serverOverride ?? parsed;
+
+                                    return _SubscriptionBadge(
+                                      status: status,
+                                      sourceIsCache: fromCache,
+                                      uid: user.uid,
+                                      nowUtc: nowUtc,
+                                      onRefresh: () async {
+                                        // refresh manual SIEMPRE server
+                                        _serverOverride = null;
+                                        await _forceServerOnce(user.uid);
+                                        return _serverOverride ?? status;
+                                      },
+                                    );
+                                  },
                                 ),
                               ],
                             ],
@@ -307,10 +350,7 @@ class _CustomDrawerState extends State<CustomDrawer> {
                     child: IconButton(
                       tooltip: 'Cerrar',
                       onPressed: () => Navigator.of(context).maybePop(),
-                      icon: const Icon(
-                        Icons.close,
-                        color: CustomDrawer._text,
-                      ),
+                      icon: const Icon(Icons.close, color: CustomDrawer._text),
                     ),
                   ),
                 ],
@@ -395,10 +435,18 @@ class _SubscriptionBadge extends StatefulWidget {
   const _SubscriptionBadge({
     required this.status,
     required this.onRefresh,
+    required this.sourceIsCache,
+    required this.uid,
+    required this.nowUtc,
   });
 
   final SubscriptionStatus status;
   final Future<SubscriptionStatus> Function()? onRefresh;
+
+  // debug
+  final bool sourceIsCache;
+  final String uid;
+  final DateTime nowUtc;
 
   @override
   State<_SubscriptionBadge> createState() => _SubscriptionBadgeState();
@@ -468,7 +516,7 @@ class _SubscriptionBadgeState extends State<_SubscriptionBadge> {
                         )
                       : const Icon(Icons.refresh, size: 18),
                   color: color,
-                  tooltip: 'Actualizar estado',
+                  tooltip: 'Actualizar estado (server)',
                 ),
             ],
           ),
@@ -531,7 +579,7 @@ String? _subscriptionHint(SubscriptionStatus status) {
         return 'Vence en ${_formatRemaining(remaining)}.';
       }
       if (status.endDate != null) {
-        return 'Venció el ${_formatDate(status.endDate!)}.';
+        return 'Vence el ${_formatDate(status.endDate!)}.';
       }
       return 'Renueva antes de que expire para mantener el acceso.';
     case SubscriptionState.grace:
@@ -543,7 +591,7 @@ String? _subscriptionHint(SubscriptionStatus status) {
       return 'Estamos revisando tu pago. Recibirás acceso en cuanto se apruebe.';
     case SubscriptionState.expired:
       if (status.endDate != null) {
-        return 'Terminó el ${_formatDate(status.endDate!)}. Renueva para editar tus formatos.';
+        return 'Terminó el ${_formatDate(status.endDate!)}. Renueva para continuar.';
       }
       return 'Renueva tu plan para seguir usando la biblioteca.';
     case SubscriptionState.blocked:

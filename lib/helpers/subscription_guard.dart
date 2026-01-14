@@ -21,10 +21,12 @@ class SubscriptionGuard {
 
   /// Ensures the user still has an active subscription before allowing gated
   /// actions (downloads, exports, etc.). Returns `true` when access is granted.
+  ///
+  /// ✅ Cambio: intenta refrescar automáticamente (Stripe source of truth)
+  /// antes de bloquear, usando `SubscriptionScope.onRefresh`.
   static Future<bool> ensureActive(BuildContext context) async {
     final scope = SubscriptionScope.maybeOf(context);
-    final status = scope?.status;
-    if (status == null) {
+    if (scope == null) {
       await _showBlockedDialog(
         context,
         message:
@@ -32,13 +34,34 @@ class SubscriptionGuard {
       );
       return false;
     }
-    if (status.isAccessGranted) return true;
 
+    // 1) Si ya trae status y da acceso, listo.
+    final initialStatus = scope.status;
+    if (initialStatus?.isAccessGranted ?? false) return true;
+
+    // 2) Si no hay status o está bloqueada, intentamos refresh una vez.
+    //    (Esto es clave después de cambiar método de pago en Stripe Portal.)
+    SubscriptionStatus? refreshed;
+    if (scope.onRefresh != null) {
+      try {
+        refreshed = await scope.onRefresh!();
+      } catch (_) {
+        // silencioso
+      }
+    }
+
+    final finalStatus = refreshed ?? scope.status;
+
+    // 3) Si con el refresh ya está activo, permitir.
+    if (finalStatus?.isAccessGranted ?? false) return true;
+
+    // 4) Si sigue sin acceso, bloquea con opción de "Actualizar estado".
     await _showBlockedDialog(
       context,
-      message:
-          'Tu suscripción no está activa. Renueva tu plan para continuar.',
-      onRefresh: scope?.onRefresh,
+      message: finalStatus == null
+          ? 'No pudimos validar tu suscripción. Intenta refrescar tu sesión.'
+          : 'Tu suscripción no está activa. Renueva tu plan para continuar.',
+      onRefresh: scope.onRefresh,
     );
     return false;
   }

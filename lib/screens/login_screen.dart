@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 
@@ -9,7 +10,7 @@ class LoginScreen extends StatefulWidget {
   State<LoginScreen> createState() => _LoginScreenState();
 }
 
-/// Paleta dark + gold
+/// Paleta dark + gold (local a esta pantalla)
 class _CapColors {
   static const bgTop = Color(0xFF0A0A0B);
   static const bgMid = Color(0xFF2A2A2F);
@@ -35,7 +36,9 @@ class _LoginScreenState extends State<LoginScreen> {
   // Campos de perfil para crear la cuenta
   final _name = TextEditingController();
   final _phone = TextEditingController();
-  final _city = TextEditingController();
+
+  // ✅ Estado seleccionado (dropdown)
+  String? _selectedState;
 
   final _formKey = GlobalKey<FormState>();
 
@@ -43,23 +46,92 @@ class _LoginScreenState extends State<LoginScreen> {
   bool _isLogin = true;
   bool _obscure = true;
 
+  static const List<String> _mxStates = [
+    'Aguascalientes',
+    'Baja California',
+    'Baja California Sur',
+    'Campeche',
+    'Chiapas',
+    'Chihuahua',
+    'Ciudad de México',
+    'Coahuila',
+    'Colima',
+    'Durango',
+    'Estado de México',
+    'Guanajuato',
+    'Guerrero',
+    'Hidalgo',
+    'Jalisco',
+    'Michoacán',
+    'Morelos',
+    'Nayarit',
+    'Nuevo León',
+    'Oaxaca',
+    'Puebla',
+    'Querétaro',
+    'Quintana Roo',
+    'San Luis Potosí',
+    'Sinaloa',
+    'Sonora',
+    'Tabasco',
+    'Tamaulipas',
+    'Tlaxcala',
+    'Veracruz',
+    'Yucatán',
+    'Zacatecas',
+  ];
+
   @override
   void dispose() {
     _email.dispose();
     _pass.dispose();
     _name.dispose();
     _phone.dispose();
-    _city.dispose();
     super.dispose();
   }
 
-  /// ✅ FIX: NO escribir el mapa completo "subscription" aquí.
-  /// Solo creamos/aseguramos el doc base del usuario.
+  // ---------- UI helpers ----------
+
+  void _capSnack(
+    String msg, {
+    IconData icon = Icons.info_outline,
+  }) {
+    if (!mounted) return;
+
+    ScaffoldMessenger.of(context).hideCurrentSnackBar();
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        backgroundColor: _CapColors.surface,
+        behavior: SnackBarBehavior.floating,
+        margin: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+        content: Row(
+          children: [
+            Icon(icon, color: _CapColors.gold),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Text(
+                msg,
+                style: const TextStyle(
+                  color: _CapColors.text,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  // ---------- Firestore user doc ----------
+
+  /// ✅ NO tocar subscription aquí. Solo doc base.
   Future<void> _ensureUserDoc(
     User user, {
     String? name,
     String? phone,
-    String? city,
+    String? city, // aquí guardaremos el "Estado" para que Profile lo muestre
   }) async {
     final ref = _db.collection('users').doc(user.uid);
     final snap = await ref.get();
@@ -75,7 +147,7 @@ class _LoginScreenState extends State<LoginScreen> {
             : (user.displayName ?? ''),
         'email': user.email ?? '',
         'phone': regPhone ?? '',
-        'city': regCity ?? '',
+        'city': regCity ?? '', // ✅ guardamos estado aquí
         'photoUrl': user.photoURL,
         'createdAt': FieldValue.serverTimestamp(),
         'updatedAt': FieldValue.serverTimestamp(),
@@ -83,7 +155,6 @@ class _LoginScreenState extends State<LoginScreen> {
       return;
     }
 
-    // Usuario existente: solo parchea datos base si faltan (sin tocar subscription)
     final data = snap.data() ?? <String, dynamic>{};
     final updates = <String, Object?>{};
 
@@ -100,11 +171,13 @@ class _LoginScreenState extends State<LoginScreen> {
     if (regPhone != null && regPhone.isNotEmpty) {
       final existingPhone = (data['phone'] ?? '').toString().trim();
       if (existingPhone.isEmpty) updates['phone'] = regPhone;
+      // si quieres permitir actualizar aunque ya exista, dímelo y lo ajusto
     }
 
     if (regCity != null && regCity.isNotEmpty) {
       final existingCity = (data['city'] ?? '').toString().trim();
       if (existingCity.isEmpty) updates['city'] = regCity;
+      // idem: si quieres sobrescribir siempre, lo ajustamos
     }
 
     if (updates.isNotEmpty) {
@@ -112,6 +185,63 @@ class _LoginScreenState extends State<LoginScreen> {
       await ref.set(updates, SetOptions(merge: true));
     }
   }
+
+  Future<void> _sendVerificationIfNeeded(User user) async {
+    try {
+      await user.reload();
+    } catch (_) {}
+    final refreshed = _auth.currentUser;
+    final verified = refreshed?.emailVerified ?? user.emailVerified;
+
+    if (!verified) {
+      await user.sendEmailVerification();
+    }
+  }
+
+  Future<void> _switchToSignupWithMessage(String msg) async {
+    if (!mounted) return;
+    setState(() {
+      _isLogin = false;
+      _pass.clear();
+      _name.clear();
+      _phone.clear();
+      _selectedState = null;
+    });
+    _capSnack(msg, icon: Icons.person_add_alt_1);
+  }
+
+  Future<void> _handleLoginCredentialError(FirebaseAuthException e) async {
+    final email = _email.text.trim();
+
+    // Intentamos distinguir: ¿correo no registrado? -> signup.
+    // Si sí existe -> credenciales incorrectas.
+    if (email.isNotEmpty && email.contains('@')) {
+      try {
+        final methods = await _auth.fetchSignInMethodsForEmail(email);
+        if (methods.isEmpty) {
+          await _switchToSignupWithMessage(
+            'Usuario no registrado en la app. Te invitamos a crear tu cuenta.',
+          );
+          return;
+        } else {
+          _capSnack(
+            'Correo o contraseña incorrectos. Intenta de nuevo.',
+            icon: Icons.lock_outline,
+          );
+          return;
+        }
+      } catch (_) {
+        // si falla la consulta, caemos al mensaje genérico abajo
+      }
+    }
+
+    _capSnack(
+      'No se pudo iniciar sesión. Verifica tus datos e intenta de nuevo.',
+      icon: Icons.error_outline,
+    );
+  }
+
+  // ---------- Actions ----------
 
   Future<void> _submit() async {
     final ok = _formKey.currentState?.validate() ?? false;
@@ -128,6 +258,13 @@ class _LoginScreenState extends State<LoginScreen> {
           password: _pass.text.trim(),
         );
       } else {
+        // ✅ signup requiere estado
+        if ((_selectedState ?? '').trim().isEmpty) {
+          _capSnack('Selecciona tu estado (México) para continuar.',
+              icon: Icons.location_city);
+          return;
+        }
+
         cred = await _auth.createUserWithEmailAndPassword(
           email: _email.text.trim(),
           password: _pass.text.trim(),
@@ -140,19 +277,73 @@ class _LoginScreenState extends State<LoginScreen> {
         }
       }
 
-      if (cred.user != null) {
-        await _ensureUserDoc(
-          cred.user!,
-          name: createdAccount ? _name.text.trim() : null,
-          phone: createdAccount ? _phone.text.trim() : null,
-          city: createdAccount ? _city.text.trim() : null,
+      final user = cred.user;
+      if (user == null) return;
+
+      // Asegura el doc base
+      await _ensureUserDoc(
+        user,
+        name: createdAccount ? _name.text.trim() : null,
+        phone: createdAccount ? _phone.text.trim() : null,
+        city: createdAccount ? (_selectedState ?? '').trim() : null,
+      );
+
+      // Si creó cuenta: enviar verificación y avisar
+      if (createdAccount) {
+        await _sendVerificationIfNeeded(user);
+
+        _capSnack(
+          'Te enviamos un correo de verificación a ${user.email ?? _email.text.trim()}. '
+          'Verifícalo para continuar.',
+          icon: Icons.mark_email_unread_outlined,
+        );
+
+        setState(() {
+          _isLogin = true;
+          _pass.clear();
+        });
+        return;
+      }
+
+      // Login: si aún no verificó, avisamos (tu gate lo bloqueará)
+      try {
+        await user.reload();
+      } catch (_) {}
+
+      final refreshed = _auth.currentUser;
+      final verified = refreshed?.emailVerified ?? user.emailVerified;
+
+      if (!verified) {
+        _capSnack(
+          'Tu correo aún no está verificado. Revisa tu bandeja/spam. '
+          'La app detectará automáticamente cuando lo verifiques.',
+          icon: Icons.mark_email_unread_outlined,
         );
       }
     } on FirebaseAuthException catch (e) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Auth: ${e.message ?? e.code}')),
-      );
+      // ✅ Mensajes amigables + auto-switch a signup si no existe usuario
+      if (_isLogin) {
+        if (e.code == 'user-not-found' ||
+            e.code == 'invalid-credential' ||
+            e.code == 'invalid-login-credentials') {
+          await _handleLoginCredentialError(e);
+          return;
+        }
+
+        if (e.code == 'wrong-password') {
+          _capSnack('Contraseña incorrecta. Intenta de nuevo.',
+              icon: Icons.lock_outline);
+          return;
+        }
+      }
+
+      if (e.code == 'invalid-email') {
+        _capSnack('El correo no es válido.', icon: Icons.mail_outline);
+        return;
+      }
+
+      _capSnack('No se pudo continuar: ${e.message ?? e.code}',
+          icon: Icons.error_outline);
     } finally {
       if (mounted) setState(() => _loading = false);
     }
@@ -161,32 +352,48 @@ class _LoginScreenState extends State<LoginScreen> {
   Future<void> _forgotPassword() async {
     final email = _email.text.trim();
     if (email.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Escribe tu correo para continuar.')),
-      );
+      _capSnack('Escribe tu correo para continuar.', icon: Icons.mail_outline);
       return;
     }
     try {
       await _auth.sendPasswordResetEmail(email: email);
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Te enviamos un correo a $email')),
-      );
+      _capSnack('Te enviamos un correo a $email',
+          icon: Icons.mark_email_read_outlined);
     } on FirebaseAuthException catch (e) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('No se pudo enviar: ${e.message ?? e.code}')),
-      );
+      _capSnack('No se pudo enviar: ${e.message ?? e.code}',
+          icon: Icons.error_outline);
     }
   }
+
+  Future<void> _resendVerification() async {
+    final current = _auth.currentUser;
+    if (current == null) {
+      _capSnack('Inicia sesión para reenviar la verificación.',
+          icon: Icons.login);
+      return;
+    }
+    try {
+      await current.sendEmailVerification();
+      _capSnack('Correo de verificación reenviado.',
+          icon: Icons.mark_email_unread_outlined);
+    } on FirebaseAuthException catch (e) {
+      _capSnack('No se pudo reenviar: ${e.message ?? e.code}',
+          icon: Icons.error_outline);
+    }
+  }
+
+  // ---------- UI widgets ----------
 
   InputDecoration _fieldDeco({
     required String label,
     required IconData icon,
     Widget? suffix,
+    String? helperText,
   }) {
     return InputDecoration(
       labelText: label,
+      helperText: helperText,
+      helperStyle: const TextStyle(color: _CapColors.textMuted, fontSize: 11),
       labelStyle: const TextStyle(color: _CapColors.textMuted),
       prefixIcon: Icon(icon, color: _CapColors.textMuted),
       suffixIcon: suffix,
@@ -264,6 +471,14 @@ class _LoginScreenState extends State<LoginScreen> {
         ),
       ),
     );
+  }
+
+  String? _validateMxPhoneOptional(String? v) {
+    final raw = (v ?? '').trim();
+    if (raw.isEmpty) return null; // ✅ opcional
+    final digits = raw.replaceAll(RegExp(r'\D'), '');
+    if (digits.length != 10) return 'Ingresa 10 dígitos (México).';
+    return null;
   }
 
   @override
@@ -352,6 +567,8 @@ class _LoginScreenState extends State<LoginScreen> {
                               ),
                             ),
                             const SizedBox(height: 14),
+
+                            // Email
                             TextFormField(
                               controller: _email,
                               keyboardType: TextInputType.emailAddress,
@@ -371,6 +588,8 @@ class _LoginScreenState extends State<LoginScreen> {
                               },
                             ),
                             const SizedBox(height: 12),
+
+                            // Password
                             TextFormField(
                               controller: _pass,
                               obscureText: _obscure,
@@ -397,8 +616,11 @@ class _LoginScreenState extends State<LoginScreen> {
                                 return null;
                               },
                             ),
+
                             if (!_isLogin) ...[
                               const SizedBox(height: 12),
+
+                              // Nombre
                               TextFormField(
                                 controller: _name,
                                 enabled: !_loading,
@@ -408,48 +630,69 @@ class _LoginScreenState extends State<LoginScreen> {
                                   icon: Icons.person_outline,
                                 ),
                                 validator: (v) {
-                                  if (_isLogin) return null;
                                   final t = (v ?? '').trim();
                                   if (t.isEmpty) return 'Ingresa tu nombre';
                                   return null;
                                 },
                               ),
                               const SizedBox(height: 12),
+
+                              // ✅ Teléfono MX (opcional, 10 dígitos) - FIX: sin const
                               TextFormField(
                                 controller: _phone,
                                 enabled: !_loading,
                                 keyboardType: TextInputType.phone,
                                 style: const TextStyle(color: _CapColors.text),
+                                inputFormatters: [
+                                  FilteringTextInputFormatter.digitsOnly,
+                                  LengthLimitingTextInputFormatter(10),
+                                ],
                                 decoration: _fieldDeco(
-                                  label: 'Teléfono',
+                                  label: 'Teléfono (opcional)',
                                   icon: Icons.phone,
+                                  helperText:
+                                      'Opcional. Para mayor asistencia fiscal/contable es necesario para que un especialista te contacte por WhatsApp.',
                                 ),
-                                validator: (v) {
-                                  if (_isLogin) return null;
-                                  final t = (v ?? '').trim();
-                                  if (t.isEmpty) return 'Ingresa tu teléfono';
-                                  return null;
-                                },
+                                validator: (v) => _validateMxPhoneOptional(v),
                               ),
                               const SizedBox(height: 12),
-                              TextFormField(
-                                controller: _city,
-                                enabled: !_loading,
-                                style: const TextStyle(color: _CapColors.text),
+
+                              // ✅ Estado (dropdown)
+                              DropdownButtonFormField<String>(
+                                value: _selectedState,
+                                items: _mxStates
+                                    .map(
+                                      (s) => DropdownMenuItem(
+                                        value: s,
+                                        child: Text(
+                                          s,
+                                          style: const TextStyle(
+                                            color: _CapColors.text,
+                                            fontWeight: FontWeight.w600,
+                                          ),
+                                        ),
+                                      ),
+                                    )
+                                    .toList(),
+                                onChanged: _loading
+                                    ? null
+                                    : (v) => setState(() => _selectedState = v),
+                                dropdownColor: _CapColors.surface,
+                                iconEnabledColor: _CapColors.textMuted,
                                 decoration: _fieldDeco(
-                                  label: 'Estado / Ciudad',
+                                  label: 'Estado (México)',
                                   icon: Icons.location_city,
                                 ),
                                 validator: (v) {
-                                  if (_isLogin) return null;
-                                  final t = (v ?? '').trim();
-                                  if (t.isEmpty)
-                                    return 'Ingresa tu estado/ciudad';
+                                  if ((v ?? '').trim().isEmpty) {
+                                    return 'Selecciona tu estado';
+                                  }
                                   return null;
                                 },
                               ),
                               const SizedBox(height: 12),
                             ],
+
                             if (_isLogin) ...[
                               const SizedBox(height: 8),
                               Align(
@@ -466,12 +709,35 @@ class _LoginScreenState extends State<LoginScreen> {
                                 ),
                               ),
                             ],
+
                             const SizedBox(height: 8),
                             _goldButton(
                               text: _isLogin ? 'Entrar' : 'Registrarme',
                               onPressed: _submit,
                               loading: _loading,
                             ),
+
+                            // Reenviar verificación (solo login)
+                            if (_isLogin) ...[
+                              const SizedBox(height: 10),
+                              OutlinedButton(
+                                onPressed:
+                                    _loading ? null : _resendVerification,
+                                style: OutlinedButton.styleFrom(
+                                  side: const BorderSide(
+                                      color: _CapColors.goldDark),
+                                  foregroundColor: _CapColors.gold,
+                                  shape: RoundedRectangleBorder(
+                                    borderRadius: BorderRadius.circular(14),
+                                  ),
+                                ),
+                                child: const Text(
+                                  'Reenviar verificación',
+                                  style: TextStyle(fontWeight: FontWeight.w800),
+                                ),
+                              ),
+                            ],
+
                             const SizedBox(height: 10),
                             TextButton(
                               onPressed: _loading
@@ -480,7 +746,7 @@ class _LoginScreenState extends State<LoginScreen> {
                                         _isLogin = !_isLogin;
                                         _name.clear();
                                         _phone.clear();
-                                        _city.clear();
+                                        _selectedState = null;
                                       }),
                               child: Text(
                                 _isLogin

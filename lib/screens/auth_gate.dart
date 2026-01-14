@@ -6,6 +6,8 @@ import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../services/subscription_service.dart';
+import '../theme/cap_colors.dart';
+import 'email_verification_screen.dart';
 import 'home_screen.dart';
 import 'login_screen.dart' as login;
 import 'subscription_required_screen.dart' as sub;
@@ -59,6 +61,10 @@ class _SubscriptionGateState extends State<SubscriptionGate>
       final u = _auth.currentUser;
       if (u != null) {
         unawaited(_refreshServer(u.uid));
+        // también actualiza emailVerified cuando vuelve
+        unawaited(u.reload().then((_) {
+          if (mounted) setState(() {});
+        }));
       }
     }
   }
@@ -67,7 +73,7 @@ class _SubscriptionGateState extends State<SubscriptionGate>
     final now = DateTime.now().toUtc();
     DateTime? next;
 
-    // Fin de acceso: endDate o graceEndsAt
+    // Fin de acceso: endDate o graceEndsAt o cancelsAt
     final candidates = <DateTime?>[
       status.endDate,
       status.graceEndsAt,
@@ -134,7 +140,13 @@ class _SubscriptionGateState extends State<SubscriptionGate>
       builder: (context, authSnap) {
         if (authSnap.connectionState == ConnectionState.waiting) {
           return const Scaffold(
-              body: Center(child: CircularProgressIndicator()));
+            backgroundColor: CapColors.bgTop,
+            body: Center(
+              child: CircularProgressIndicator(
+                valueColor: AlwaysStoppedAnimation<Color>(CapColors.gold),
+              ),
+            ),
+          );
         }
 
         final user = authSnap.data;
@@ -142,6 +154,25 @@ class _SubscriptionGateState extends State<SubscriptionGate>
           return const login.LoginScreen();
         }
 
+        // ✅ PASO 1: exigir email verificado antes de suscripción/pago
+        if (!user.emailVerified) {
+          return EmailVerificationScreen(
+            email: (user.email ?? '').trim(),
+            onVerified: () async {
+              // recarga y fuerza rebuild para que pase al siguiente paso
+              await _auth.currentUser?.reload();
+              if (mounted) setState(() {});
+            },
+            onResend: () async {
+              await _auth.currentUser?.sendEmailVerification();
+            },
+            onSignOut: () async {
+              await _auth.signOut();
+            },
+          );
+        }
+
+        // ✅ PASO 2: validación de doc + suscripción
         return StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
           stream: _db
               .collection('users')
@@ -150,13 +181,25 @@ class _SubscriptionGateState extends State<SubscriptionGate>
           builder: (context, userSnap) {
             if (userSnap.connectionState == ConnectionState.waiting) {
               return const Scaffold(
-                  body: Center(child: CircularProgressIndicator()));
+                backgroundColor: CapColors.bgTop,
+                body: Center(
+                  child: CircularProgressIndicator(
+                    valueColor: AlwaysStoppedAnimation<Color>(CapColors.gold),
+                  ),
+                ),
+              );
             }
 
             if (userSnap.data?.exists != true) {
               unawaited(SubscriptionService.ensureUserDoc(user));
               return const Scaffold(
-                  body: Center(child: CircularProgressIndicator()));
+                backgroundColor: CapColors.bgTop,
+                body: Center(
+                  child: CircularProgressIndicator(
+                    valueColor: AlwaysStoppedAnimation<Color>(CapColors.gold),
+                  ),
+                ),
+              );
             }
 
             final status = SubscriptionStatus.fromSnapshot(userSnap.data!);
