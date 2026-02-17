@@ -1,6 +1,5 @@
 // lib/screens/user_profile_screen.dart
 import 'dart:async';
-import 'dart:convert';
 import 'dart:io';
 
 import 'package:cloud_firestore/cloud_firestore.dart';
@@ -8,18 +7,14 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_storage/firebase_storage.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter_stripe/flutter_stripe.dart' as stripe;
-import 'package:http/http.dart' as http;
 import 'package:image_picker/image_picker.dart';
+import 'package:in_app_purchase/in_app_purchase.dart';
 import 'package:open_filex/open_filex.dart';
 import 'package:path_provider/path_provider.dart';
-import 'package:url_launcher/url_launcher.dart';
 
-import '../config/subscription_config.dart';
 import '../helpers/favorites_manager.dart';
-import '../helpers/subscription_guard.dart';
 import '../models/fav_video.dart';
-import '../services/subscription_service.dart';
+import '../services/doc_iap_service.dart';
 import '../theme/cap_colors.dart';
 import '../widgets/app_bottom_nav.dart';
 import '../widgets/app_top_bar.dart';
@@ -28,14 +23,6 @@ import '../widgets/favorites/doc_tile.dart';
 import '../widgets/favorites/fav_card.dart';
 import '../widgets/favorites/video_tile.dart';
 import '../widgets/profile/profile_field.dart';
-import '../widgets/profile/subscription_row.dart';
-
-/// (Nota) Ya no se usa aquí porque el backend decide el monto por type.
-const int _kVerifyAmountCents = 1000;
-
-/// ✅ Stripe Customer Portal (tu link directo)
-const String _kStripeCustomerPortalUrl =
-    'https://billing.stripe.com/p/login/test_9B6cN425Hgck9Zm7n94Vy00';
 
 class UserProfileScreen extends StatefulWidget {
   const UserProfileScreen({
@@ -43,13 +30,11 @@ class UserProfileScreen extends StatefulWidget {
     this.auth,
     this.firestore,
     this.storage,
-    this.subscriptionService,
   });
 
   final FirebaseAuth? auth;
   final FirebaseFirestore? firestore;
   final FirebaseStorage? storage;
-  final SubscriptionService? subscriptionService;
 
   @override
   State<UserProfileScreen> createState() => _UserProfileScreenState();
@@ -62,7 +47,9 @@ class _UserProfileScreenState extends State<UserProfileScreen>
   late final FirebaseAuth _auth;
   late final FirebaseFirestore _db;
   late final FirebaseStorage _storage;
-  late final SubscriptionService _subscriptionService;
+
+  late final DocIapService _iap;
+  StreamSubscription<List<PurchaseDetails>>? _purchaseSub;
 
   final _nameCtrl = TextEditingController();
   final _phoneCtrl = TextEditingController();
@@ -73,34 +60,25 @@ class _UserProfileScreenState extends State<UserProfileScreen>
   bool _saving = false;
   bool _editing = false;
   bool _signingOut = false;
-  bool _updatingPaymentMethods = false;
-
-  // ✅ abrir portal
-  bool _openingStripePortal = false;
-
-  // ✅ al volver del portal, refrescar
-  bool _refreshAfterStripePortal = false;
 
   // Favoritos
   bool _loadingFavs = true;
   List<Reference> _favDocs = [];
   List<FavVideo> _favVideos = [];
 
-  // ✅ _photoUrlRaw = lo que guardamos en Firestore/Auth (sin cache bust)
-  // ✅ _photoUrl = lo que usamos en UI (con cache bust)
-  String? _photoUrlRaw;
-  String? _photoUrl;
+  // Foto perfil
+  String? _photoUrlRaw; // RAW guardado (sin cache-bust)
+  String? _photoUrl; // UI (con cache-bust)
 
-  // Suscripción
-  DateTime? _createdAt; // fecha creación cuenta
-  DateTime? _startDate;
-  DateTime? _endDate;
-  String? _paymentMethod;
-  List<StoredPaymentMethod> _paymentMethods = [];
-  bool _cancelAtPeriodEnd = false;
-  DateTime? _cancelsAt;
-  String? _stripeSubscriptionId;
-  SubscriptionState? _subscriptionState;
+  // Compras por documento (entitlements)
+  bool _restoring = false;
+  Set<String> _purchasedProductIds = <String>{};
+
+  // Meta
+  DateTime? _createdAt;
+
+  // ✅ Carpeta “fuente de verdad” para documentos (igual que Biblioteca)
+  static const String _docsFolder = 'docs';
 
   @override
   void initState() {
@@ -110,14 +88,21 @@ class _UserProfileScreenState extends State<UserProfileScreen>
     _auth = widget.auth ?? FirebaseAuth.instance;
     _db = widget.firestore ?? FirebaseFirestore.instance;
     _storage = widget.storage ?? FirebaseStorage.instance;
-    _subscriptionService =
-        widget.subscriptionService ?? SubscriptionService(firestore: _db);
+
+    _iap = DocIapService(auth: _auth, firestore: _db);
+
+    _purchaseSub = _iap.purchaseStream.listen(
+      _handlePurchaseUpdates,
+      onError: (_) {},
+    );
+
     _loadProfile();
   }
 
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    _purchaseSub?.cancel();
 
     _nameCtrl.dispose();
     _phoneCtrl.dispose();
@@ -128,67 +113,105 @@ class _UserProfileScreenState extends State<UserProfileScreen>
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    // ✅ cuando vuelves del portal (custom tab / safari view),
-    // refrescamos para reflejar el método actualizado.
-    if (state == AppLifecycleState.resumed && _refreshAfterStripePortal) {
-      _refreshAfterStripePortal = false;
-      _loadProfile();
+    if (state == AppLifecycleState.resumed) {
+      final u = _auth.currentUser;
+      if (u != null) {
+        unawaited(u.reload().then((_) {
+          if (mounted) setState(() {});
+        }));
+      }
     }
   }
 
-  // ------------------- Stripe Portal -------------------
+  // ─────────────────────────────
+  // Helpers: docKey/productId (idéntico a Biblioteca)
+  // ─────────────────────────────
+  String _docKeyFromFilename(String name) {
+    var base = name;
+    final dot = base.lastIndexOf('.');
+    if (dot > 0) base = base.substring(0, dot);
 
-  Future<void> _openStripeCustomerPortalLink() async {
-    if (_openingStripePortal) return;
+    base = base.toLowerCase().trim();
+    base = base.replaceAll(RegExp(r'\s+'), '_');
+    base = base.replaceAll(RegExp(r'[^a-z0-9_]+'), '');
+    return base;
+  }
 
-    setState(() => _openingStripePortal = true);
+  String _productIdForRef(Reference ref) {
+    final key = _docKeyFromFilename(ref.name);
+    return 'capfiscal_doc_$key';
+  }
+
+  bool _isPurchased(Reference ref) {
+    final pid = _productIdForRef(ref);
+    return _purchasedProductIds.contains(pid);
+  }
+
+  // ─────────────────────────────
+  // Purchases stream (restores/purchases)
+  // ─────────────────────────────
+  Future<void> _handlePurchaseUpdates(List<PurchaseDetails> purchases) async {
+    for (final p in purchases) {
+      if (p.status == PurchaseStatus.purchased ||
+          p.status == PurchaseStatus.restored) {
+        try {
+          await _iap.grantEntitlement(p);
+          _purchasedProductIds.add(p.productID);
+        } catch (_) {}
+      }
+
+      if (p.pendingCompletePurchase) {
+        await InAppPurchase.instance.completePurchase(p);
+      }
+    }
+
+    if (mounted) setState(() {});
+  }
+
+  Future<void> _loadPurchasedDocs() async {
+    final ids = await _iap.loadPurchasedProductIds();
+    if (!mounted) return;
+    setState(() => _purchasedProductIds = ids);
+  }
+
+  Future<void> _restorePurchases() async {
+    if (_restoring) return;
+    setState(() => _restoring = true);
 
     try {
-      final uri = Uri.parse(_kStripeCustomerPortalUrl);
+      await _iap.restorePurchases();
+      await _loadPurchasedDocs();
 
-      // ✅ marcamos para refrescar cuando el usuario cierre el portal y regrese
-      _refreshAfterStripePortal = true;
-
-      // Abre dentro de la app (SafariViewController/Chrome Custom Tabs)
-      final ok = await launchUrl(
-        uri,
-        mode: LaunchMode.inAppBrowserView,
-      );
-
-      if (!ok && mounted) {
-        _refreshAfterStripePortal = false;
+      if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-              content: Text('No se pudo mostrar el portal de Stripe')),
+          const SnackBar(content: Text('Compras restauradas ✅')),
         );
       }
     } catch (e) {
-      _refreshAfterStripePortal = false;
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Error al abrir portal de Stripe: $e')),
+        SnackBar(content: Text('No se pudo restaurar: $e')),
       );
     } finally {
-      if (mounted) setState(() => _openingStripePortal = false);
+      if (mounted) setState(() => _restoring = false);
     }
   }
 
-  // ------------------- FOTO PERFIL (Storage como fuente de verdad) -------------------
-
+  // ─────────────────────────────
+  // FOTO PERFIL (Storage como fuente de verdad)
+  // ─────────────────────────────
   String _cacheBustUrl(String url) {
     final ts = DateTime.now().millisecondsSinceEpoch.toString();
     try {
       final uri = Uri.parse(url);
       final qp = Map<String, String>.from(uri.queryParameters);
-      qp['v'] = ts; // cache-bust
+      qp['v'] = ts;
       return uri.replace(queryParameters: qp).toString();
     } catch (_) {
       return url.contains('?') ? '$url&v=$ts' : '$url?v=$ts';
     }
   }
 
-  /// ✅ Obtiene el downloadURL RAW (sin cache-bust) desde:
-  /// users/{uid}/profile.jpg
   Future<String?> _getProfilePhotoUrlRawFromStorage(String uid) async {
     try {
       final ref = _storage.ref('users/$uid/profile.jpg');
@@ -199,96 +222,86 @@ class _UserProfileScreenState extends State<UserProfileScreen>
     }
   }
 
-  // ------------------- Helpers StoredPaymentMethod (sin copyWith) -------------------
+  Future<void> _changeImage() async {
+    final user = _auth.currentUser;
+    if (user == null) return;
 
-  StoredPaymentMethod _setDefaultFlag(StoredPaymentMethod m, bool isDefault) {
-    return StoredPaymentMethod(
-      id: m.id,
-      label: m.label,
-      brand: m.brand,
-      last4: m.last4,
-      isDefault: isDefault,
-      createdAt: m.createdAt,
+    final picker = ImagePicker();
+    final XFile? picked = await picker.pickImage(
+      source: ImageSource.gallery,
+      imageQuality: 85,
+      maxWidth: 1200,
     );
-  }
+    if (picked == null) return;
 
-  List<StoredPaymentMethod> _sortMethods(List<StoredPaymentMethod> methods) {
-    final copy = List<StoredPaymentMethod>.from(methods);
-    copy.sort((a, b) {
-      if (a.isDefault != b.isDefault) return a.isDefault ? -1 : 1;
-      final ad = a.createdAt ?? DateTime.fromMillisecondsSinceEpoch(0);
-      final bd = b.createdAt ?? DateTime.fromMillisecondsSinceEpoch(0);
-      return bd.compareTo(ad); // más nuevas arriba (después de la principal)
-    });
-    return copy;
-  }
+    try {
+      final file = File(picked.path);
+      final ref = _storage.ref('users/${user.uid}/profile.jpg');
 
-  List<StoredPaymentMethod> _dedupeById(List<StoredPaymentMethod> methods) {
-    final map = <String, StoredPaymentMethod>{};
-    for (final m in methods) {
-      if (m.id.trim().isEmpty) continue;
-      map[m.id] = m; // último gana
-    }
-    return map.values.toList(growable: false);
-  }
+      await ref.putFile(
+        file,
+        SettableMetadata(
+          contentType: 'image/jpeg',
+          cacheControl: 'no-cache, no-store, must-revalidate',
+        ),
+      );
 
-  // ------------------- PaymentMethods: encode/decode -------------------
+      final raw = await _getProfilePhotoUrlRawFromStorage(user.uid);
+      if (raw == null || raw.isEmpty) {
+        throw Exception('No se pudo obtener downloadURL de la foto.');
+      }
 
-  List<StoredPaymentMethod> _decodePaymentMethods(dynamic raw) {
-    if (raw is! List) return <StoredPaymentMethod>[];
+      setState(() {
+        _photoUrlRaw = raw;
+        _photoUrl = _cacheBustUrl(raw);
+      });
 
-    final out = <StoredPaymentMethod>[];
-    for (final item in raw) {
-      if (item is Map) {
-        final m = Map<String, dynamic>.from(item);
-        final created = m['createdAt'];
-        DateTime? createdAt;
-        if (created is Timestamp) createdAt = created.toDate();
-        if (created is int) {
-          createdAt = DateTime.fromMillisecondsSinceEpoch(created);
-        }
-        out.add(
-          StoredPaymentMethod(
-            id: (m['id'] ?? '').toString(),
-            label: (m['label'] ?? '').toString(),
-            brand: (m['brand'] ?? '').toString(),
-            last4: (m['last4'] ?? '----').toString(),
-            isDefault: (m['isDefault'] == true),
-            createdAt: createdAt,
-          ),
+      await _db.collection('users').doc(user.uid).set(
+        {'photoUrl': _photoUrlRaw, 'updatedAt': FieldValue.serverTimestamp()},
+        SetOptions(merge: true),
+      );
+
+      await user.updatePhotoURL(_photoUrlRaw);
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Foto actualizada')),
         );
       }
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Error al subir imagen: $e')),
+      );
     }
+  }
 
-    // normaliza principal
-    if (out.isNotEmpty && out.every((e) => e.isDefault == false)) {
-      out[0] = _setDefaultFlag(out[0], true);
+  Future<void> _deleteImage() async {
+    final user = _auth.currentUser;
+    if (user == null) return;
+
+    try {
+      await _storage.ref('users/${user.uid}/profile.jpg').delete();
+    } catch (_) {}
+
+    await _db.collection('users').doc(user.uid).set(
+      {'photoUrl': null, 'updatedAt': FieldValue.serverTimestamp()},
+      SetOptions(merge: true),
+    );
+
+    await user.updatePhotoURL(null);
+
+    if (mounted) {
+      setState(() {
+        _photoUrlRaw = null;
+        _photoUrl = null;
+      });
     }
-    return _sortMethods(_dedupeById(out));
   }
 
-  List<Map<String, dynamic>> _encodePaymentMethods(
-    List<StoredPaymentMethod> methods,
-  ) {
-    return methods.map((m) {
-      return <String, dynamic>{
-        'id': m.id,
-        'label': m.label,
-        'brand': m.brand,
-        'last4': m.last4,
-        'isDefault': m.isDefault,
-        if (m.createdAt != null) 'createdAt': Timestamp.fromDate(m.createdAt!),
-      };
-    }).toList();
-  }
-
-  StoredPaymentMethod? _primaryMethod(List<StoredPaymentMethod> methods) {
-    if (methods.isEmpty) return null;
-    return methods.firstWhere((m) => m.isDefault, orElse: () => methods.first);
-  }
-
-  // ------------------- DATA -------------------
-
+  // ─────────────────────────────
+  // DATA
+  // ─────────────────────────────
   Future<void> _loadProfile() async {
     setState(() {
       _loading = true;
@@ -298,17 +311,18 @@ class _UserProfileScreenState extends State<UserProfileScreen>
     try {
       final user = _auth.currentUser;
       if (user == null) {
-        setState(() {
-          _loading = false;
-          _loadingFavs = false;
-        });
+        if (mounted) {
+          setState(() {
+            _loading = false;
+            _loadingFavs = false;
+          });
+        }
         return;
       }
 
       final snap = await _db.collection('users').doc(user.uid).get();
       final data = snap.data() ?? <String, dynamic>{};
 
-      // createdAt desde Firestore (campo raíz)
       final createdTs = data['createdAt'];
       if (createdTs is Timestamp) {
         _createdAt = createdTs.toDate();
@@ -316,26 +330,23 @@ class _UserProfileScreenState extends State<UserProfileScreen>
         _createdAt = null;
       }
 
-      // Datos básicos de perfil
       _nameCtrl.text =
           (data['name'] ?? user.displayName ?? '').toString().trim();
       _phoneCtrl.text = (data['phone'] ?? '').toString().trim();
       _emailCtrl.text = (data['email'] ?? user.email ?? '').toString().trim();
       _cityCtrl.text = (data['city'] ?? '').toString().trim();
 
-      // ✅ 1) Trae raw desde Firestore como fallback
       _photoUrlRaw = (data['photoUrl'] as String?)?.trim();
       _photoUrl = (_photoUrlRaw == null || _photoUrlRaw!.isEmpty)
           ? null
           : _cacheBustUrl(_photoUrlRaw!);
 
-      // ✅ 2) Fuente de verdad: Storage users/{uid}/profile.jpg
+      // Fuente de verdad: Storage
       final storageRaw = await _getProfilePhotoUrlRawFromStorage(user.uid);
       if (storageRaw != null && storageRaw.trim().isNotEmpty) {
         _photoUrlRaw = storageRaw.trim();
         _photoUrl = _cacheBustUrl(_photoUrlRaw!);
 
-        // ✅ opcional: sincroniza Firestore si está null o diferente
         final firestoreRaw = (data['photoUrl'] as String?)?.trim();
         if (firestoreRaw != _photoUrlRaw) {
           await _db.collection('users').doc(user.uid).set(
@@ -348,65 +359,7 @@ class _UserProfileScreenState extends State<UserProfileScreen>
         }
       }
 
-      // Datos de suscripción normalizados
-      final status = SubscriptionStatus.fromUserData(data);
-      _startDate = status.startDate;
-      _endDate = status.endDate;
-      _subscriptionState = status.state;
-      _stripeSubscriptionId = status.stripeSubscriptionId;
-      _cancelAtPeriodEnd = status.cancelAtPeriodEnd;
-
-      // usamos: cancelsAt -> endDate -> graceEndsAt
-      _cancelsAt = status.cancelsAt ?? status.endDate ?? status.graceEndsAt;
-
-      // ✅ Fuente de verdad de paymentMethods: users/{uid}.subscription.paymentMethods
-      final subData = (data['subscription'] is Map)
-          ? Map<String, dynamic>.from(data['subscription'] as Map)
-          : <String, dynamic>{};
-
-      // 1) primero Firestore (como en tu BD)
-      var methods = _decodePaymentMethods(subData['paymentMethods']);
-
-      // 2) fallback: lo que venga del parser/service
-      if (methods.isEmpty) {
-        methods = status.paymentMethods;
-        methods = _sortMethods(_dedupeById(methods));
-      }
-
-      // 3) paymentMethod label (primero lo guardado en subscription.paymentMethod)
-      final legacyPaymentMethod = (subData['paymentMethod'] ??
-              status.paymentMethod ??
-              _primaryMethod(status.paymentMethods)?.label)
-          ?.toString();
-
-      // 4) si no hay lista pero sí hay label, crea uno virtual
-      if (methods.isEmpty &&
-          legacyPaymentMethod != null &&
-          legacyPaymentMethod.trim().isNotEmpty) {
-        methods = [
-          StoredPaymentMethod(
-            id: 'pm_initial',
-            label: legacyPaymentMethod,
-            brand: legacyPaymentMethod,
-            last4: '----',
-            isDefault: true,
-            createdAt: _startDate ?? DateTime.now().toUtc(),
-          ),
-        ];
-      }
-
-      // normaliza principal
-      if (methods.isNotEmpty && methods.every((m) => m.isDefault == false)) {
-        methods[0] = _setDefaultFlag(methods[0], true);
-      }
-
-      methods = _sortMethods(_dedupeById(methods));
-      _paymentMethods = methods;
-
-      // paymentMethod UI = label del principal si existe, si no legacy
-      final primary = _primaryMethod(_paymentMethods);
-      _paymentMethod = primary?.label ?? legacyPaymentMethod;
-
+      await _loadPurchasedDocs();
       await _loadFavorites();
     } catch (_) {
       // silencioso
@@ -415,6 +368,9 @@ class _UserProfileScreenState extends State<UserProfileScreen>
     }
   }
 
+  // ─────────────────────────────
+  // FAVORITOS (fix: soporte legacy + nuevo)
+  // ─────────────────────────────
   String _extractYoutubeRaw(Map<String, dynamic> data) {
     final candidates = [
       'youtubeId',
@@ -479,6 +435,42 @@ class _UserProfileScreenState extends State<UserProfileScreen>
     return false;
   }
 
+  bool _isFavDocRef(Set<String> favSet, Reference ref) {
+    final name = ref.name.trim();
+    final fullPath = ref.fullPath.trim();
+    final baseFromPath =
+        fullPath.contains('/') ? fullPath.split('/').last.trim() : fullPath;
+
+    final keyByName = _docKeyFromFilename(name);
+    final keyByPath = _docKeyFromFilename(baseFromPath);
+
+    // Soporta:
+    // - guardado como "ref.name" (nuevo)
+    // - guardado como docKey (legacy común)
+    // - guardado con prefijos "doc:" / "document:" (legacy)
+    // - guardado como fullPath (algunas implementaciones lo usan)
+    final candidates = <String>{
+      name,
+      baseFromPath,
+      fullPath,
+      keyByName,
+      keyByPath,
+      'doc:$name',
+      'doc:$baseFromPath',
+      'doc:$fullPath',
+      'doc:$keyByName',
+      'doc:$keyByPath',
+      'document:$name',
+      'document:$keyByName',
+      'document:$keyByPath',
+    };
+
+    for (final c in candidates) {
+      if (c.isNotEmpty && favSet.contains(c)) return true;
+    }
+    return false;
+  }
+
   Future<void> _loadFavorites() async {
     try {
       final uid = _auth.currentUser?.uid;
@@ -487,21 +479,28 @@ class _UserProfileScreenState extends State<UserProfileScreen>
         return;
       }
 
-      final favNames = await FavoritesManager.getFavorites(uid);
+      final raw = await FavoritesManager.getFavorites(uid);
+      final List<String> favNames = raw
+          .map((e) => e.toString())
+          .where((e) => e.trim().isNotEmpty)
+          .toList();
+
       final favSet = favNames.map((e) => e.trim()).toSet();
 
-      final root = await _storage.ref('/').listAll();
-      final docs = root.items.where((ref) {
-        return _inFav(favSet, ref.name) ||
-            _inFav(favSet, ref.name, typePrefix: 'doc');
-      }).toList();
+      // ✅ DOCS: listar desde docs/ (NO filtrar por PDF; ahora soporta DOC/DOCX/etc)
+      final docsResult = await _storage.ref(_docsFolder).listAll();
+      final docs = docsResult.items
+          .where((ref) => _isFavDocRef(favSet, ref))
+          .toList()
+        ..sort((a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()));
 
+      // VIDEOS: tu lógica original + prefijo "video:"
       final vSnap = await _db.collection('videos').get();
       final List<FavVideo> vids = [];
       for (final d in vSnap.docs) {
         final data = d.data();
-        final raw = _extractYoutubeRaw(data);
-        final id = _normalizeYouTubeId(raw);
+        final rawYt = _extractYoutubeRaw(data);
+        final id = _normalizeYouTubeId(rawYt);
         final title = (data['title'] ?? '').toString().trim();
         final desc = (data['description'] ?? '').toString().trim();
 
@@ -512,12 +511,14 @@ class _UserProfileScreenState extends State<UserProfileScreen>
             favSet.contains(title);
 
         if (isFav && RegExp(r'^[a-zA-Z0-9_-]{11}$').hasMatch(id)) {
-          vids.add(FavVideo(
-            docId: d.id,
-            youtubeId: id,
-            title: title.isEmpty ? 'Video' : title,
-            description: desc,
-          ));
+          vids.add(
+            FavVideo(
+              docId: d.id,
+              youtubeId: id,
+              title: title.isEmpty ? 'Video' : title,
+              description: desc,
+            ),
+          );
         }
       }
 
@@ -533,29 +534,25 @@ class _UserProfileScreenState extends State<UserProfileScreen>
     }
   }
 
-  String _subscriptionLabel() {
-    final state = _subscriptionState;
-    if (state == null) return 'Sin información';
-    switch (state) {
-      case SubscriptionState.active:
-        return _cancelAtPeriodEnd
-            ? 'Activa (se cancelará al final del periodo)'
-            : 'Activa';
-      case SubscriptionState.grace:
-        return 'En periodo de gracia';
-      case SubscriptionState.pending:
-        return 'Pago pendiente de confirmación';
-      case SubscriptionState.blocked:
-        return 'Cuenta bloqueada';
-      case SubscriptionState.expired:
-        return 'Expirada';
-      case SubscriptionState.none:
-        return 'Sin suscripción';
-    }
-  }
-
+  // ─────────────────────────────
+  // Descarga gated por compra (IAP)
+  // ─────────────────────────────
   Future<void> _downloadAndOpenFile(Reference ref) async {
-    if (!await SubscriptionGuard.ensureActive(context)) return;
+    if (!_isPurchased(ref)) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Debes comprar este documento para descargarlo'),
+        ),
+      );
+
+      Navigator.of(context).pushNamed(
+        '/biblioteca',
+        arguments: {'query': ref.name},
+      );
+      return;
+    }
+
     try {
       final dir = await getApplicationDocumentsDirectory();
       final file = File('${dir.path}/${ref.name}');
@@ -571,11 +568,29 @@ class _UserProfileScreenState extends State<UserProfileScreen>
     }
   }
 
+  // ─────────────────────────────
+  // Cuenta
+  // ─────────────────────────────
   Future<void> _reloadAuthUser() async {
     try {
       await _auth.currentUser?.reload();
       if (mounted) setState(() {});
     } catch (_) {}
+  }
+
+  Future<void> _sendEmailVerification() async {
+    final user = _auth.currentUser;
+    if (user == null) return;
+    try {
+      await user.sendEmailVerification();
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Correo de verificación enviado')),
+      );
+    } catch (e) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Error al enviar verificación: $e')),
+      );
+    }
   }
 
   Future<bool> _reauthWithPassword(String email) async {
@@ -611,6 +626,7 @@ class _UserProfileScreenState extends State<UserProfileScreen>
         ],
       ),
     );
+
     if (ok != true) return false;
 
     try {
@@ -672,19 +688,18 @@ class _UserProfileScreenState extends State<UserProfileScreen>
 
       await user.updateDisplayName(_nameCtrl.text.trim());
 
-      // ✅ Auth PhotoURL siempre RAW (sin cache bust)
       if (_photoUrlRaw != null && _photoUrlRaw!.isNotEmpty) {
         await user.updatePhotoURL(_photoUrlRaw);
       }
 
-      // ✅ FIX: NO tocar subscription aquí (evita borrar fechas o métodos).
       await _db.collection('users').doc(user.uid).set({
         'name': _nameCtrl.text.trim(),
         'phone': _phoneCtrl.text.trim(),
         'email': newEmail.isNotEmpty ? newEmail : (user.email ?? ''),
         'city': _cityCtrl.text.trim(),
-        'photoUrl': _photoUrlRaw, // ✅ guardar RAW
+        'photoUrl': _photoUrlRaw,
         'updatedAt': FieldValue.serverTimestamp(),
+        'lastLoginAt': FieldValue.serverTimestamp(),
       }, SetOptions(merge: true));
 
       if (mounted) {
@@ -701,268 +716,6 @@ class _UserProfileScreenState extends State<UserProfileScreen>
       }
     } finally {
       if (mounted) setState(() => _saving = false);
-    }
-  }
-
-  Future<void> _changeImage() async {
-    final user = _auth.currentUser;
-    if (user == null) return;
-
-    final picker = ImagePicker();
-    final XFile? picked = await picker.pickImage(
-      source: ImageSource.gallery,
-      imageQuality: 85,
-      maxWidth: 1200,
-    );
-    if (picked == null) return;
-
-    try {
-      final file = File(picked.path);
-
-      // ✅ ruta confirmada: users/{uid}/profile.jpg
-      final ref = _storage.ref('users/${user.uid}/profile.jpg');
-
-      await ref.putFile(
-        file,
-        SettableMetadata(
-          contentType: 'image/jpeg',
-          cacheControl: 'no-cache, no-store, must-revalidate',
-        ),
-      );
-
-      // ✅ obtiene RAW desde Storage, y cache-bust para UI
-      final raw = await _getProfilePhotoUrlRawFromStorage(user.uid);
-      if (raw == null || raw.isEmpty) {
-        throw Exception('No se pudo obtener downloadURL de la foto.');
-      }
-
-      setState(() {
-        _photoUrlRaw = raw;
-        _photoUrl = _cacheBustUrl(raw);
-      });
-
-      // ✅ Firestore guarda RAW
-      await _db.collection('users').doc(user.uid).set(
-        {'photoUrl': _photoUrlRaw, 'updatedAt': FieldValue.serverTimestamp()},
-        SetOptions(merge: true),
-      );
-
-      // ✅ Auth guarda RAW
-      await user.updatePhotoURL(_photoUrlRaw);
-
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Foto actualizada')),
-        );
-      }
-    } catch (e) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Error al subir imagen: $e')),
-      );
-    }
-  }
-
-  Future<void> _deleteImage() async {
-    final user = _auth.currentUser;
-    if (user == null) return;
-
-    try {
-      await _storage.ref('users/${user.uid}/profile.jpg').delete();
-    } catch (_) {}
-
-    await _db.collection('users').doc(user.uid).set(
-      {'photoUrl': null, 'updatedAt': FieldValue.serverTimestamp()},
-      SetOptions(merge: true),
-    );
-
-    await user.updatePhotoURL(null);
-
-    if (mounted) {
-      setState(() {
-        _photoUrlRaw = null;
-        _photoUrl = null;
-      });
-    }
-  }
-
-  // ------- Métodos de pago (solo visual ahora) -------
-
-  // (las funciones de add/verify siguen en el archivo tal cual, pero ya no se usan en UI)
-
-  // ------- Cancelación manual vía correo -------
-
-  Future<void> _sendCancellationEmail() async {
-    final user = _auth.currentUser;
-    final email = (user?.email ?? _emailCtrl.text.trim()).trim();
-    final uid = user?.uid ?? '';
-    final now = DateTime.now().toLocal();
-
-    final bodyText = ''
-        'Hola equipo CAPFISCAL,\n\n'
-        'Quiero solicitar la cancelación de mi suscripción a la Biblioteca CAPFISCAL.\n\n'
-        'Datos de la cuenta:\n'
-        '- Correo: ${email.isEmpty ? 'N/A' : email}\n'
-        '- UID: ${uid.isEmpty ? 'N/A' : uid}\n'
-        '- Fecha de solicitud: ${now.toIso8601String()}\n\n'
-        'Gracias.\n';
-
-    final uri = Uri(
-      scheme: 'mailto',
-      path: 'petmega.redes@gmail.com',
-      queryParameters: {
-        'subject': 'Solicitud de cancelación de suscripción CAPFISCAL',
-        'body': bodyText,
-      },
-    );
-
-    try {
-      final launched = await launchUrl(
-        uri,
-        mode: LaunchMode.externalApplication,
-      );
-
-      if (!mounted) return;
-
-      if (!launched) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text(
-              'No se pudo abrir la app de correo. Verifica que tengas una configurada.',
-            ),
-          ),
-        );
-        return;
-      }
-
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text(
-            'Se abrió tu app de correo. Envía el mensaje para completar la solicitud.',
-          ),
-        ),
-      );
-    } catch (e) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Error al abrir correo: $e')),
-      );
-    }
-  }
-
-  Future<void> _confirmManualCancellation() async {
-    final ok = await showDialog<bool>(
-      context: context,
-      barrierDismissible: true,
-      builder: (dialogCtx) => AlertDialog(
-        backgroundColor: CapColors.surface,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-        title: const Text(
-          'Solicitar cancelación',
-          style: TextStyle(color: CapColors.text, fontWeight: FontWeight.w800),
-        ),
-        content: const Text(
-          'Si solicitas la cancelación de tu suscripción, perderás todos los '
-          'beneficios y el acceso a los documentos una vez que el equipo de '
-          'CAPFISCAL procese tu solicitud.\n\n'
-          'La cancelación se realiza de forma manual en un plazo máximo de 3 días. '
-          'Al continuar, prepararemos un correo con tus datos para completar el proceso.',
-          style: TextStyle(color: CapColors.textMuted),
-        ),
-        actionsPadding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
-        actions: [
-          OutlinedButton(
-            style: OutlinedButton.styleFrom(
-              side: const BorderSide(color: Colors.white24),
-              foregroundColor: CapColors.text,
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-              shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(10),
-              ),
-            ),
-            onPressed: () => Navigator.of(dialogCtx).pop(false),
-            child: const Text('Seguir con mi suscripción'),
-          ),
-          ElevatedButton(
-            style: ElevatedButton.styleFrom(
-              backgroundColor: CapColors.gold,
-              foregroundColor: Colors.black,
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-              shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(10),
-              ),
-            ),
-            onPressed: () => Navigator.of(dialogCtx).pop(true),
-            child: const Text('Enviar solicitud'),
-          ),
-        ],
-      ),
-    );
-
-    if (ok == true) {
-      await _sendCancellationEmail();
-    }
-  }
-
-  Future<void> _openManageSubscription() async {
-    if (kIsWeb) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content:
-              Text('Administra tu suscripción desde la tienda de tu móvil.'),
-        ),
-      );
-      return;
-    }
-
-    final url = switch (defaultTargetPlatform) {
-      TargetPlatform.iOS => SubscriptionConfig.iosManageSubscriptionUrl,
-      TargetPlatform.android =>
-        SubscriptionConfig.playStoreManageSubscriptionUrl,
-      _ => '',
-    };
-
-    if (url.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content:
-              Text('Configura ANDROID_PACKAGE_NAME para abrir Play Store.'),
-        ),
-      );
-      return;
-    }
-
-    final uri = Uri.parse(url);
-    final ok = await launchUrl(uri, mode: LaunchMode.externalApplication);
-    if (!ok && mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('No se pudo abrir la gestión de pagos.')),
-      );
-    }
-  }
-
-  Future<void> _restoreSubscription() async {
-    await _loadProfile();
-    if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('Estado de suscripción actualizado.')),
-    );
-  }
-
-  // --------- Acciones de cuenta ---------
-
-  Future<void> _sendEmailVerification() async {
-    final user = _auth.currentUser;
-    if (user == null) return;
-    try {
-      await user.sendEmailVerification();
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Correo de verificación enviado')),
-      );
-    } catch (e) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Error al enviar verificación: $e')),
-      );
     }
   }
 
@@ -1005,8 +758,7 @@ class _UserProfileScreenState extends State<UserProfileScreen>
               foregroundColor: CapColors.text,
               padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
               shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(10),
-              ),
+                  borderRadius: BorderRadius.circular(10)),
             ),
             onPressed: () => Navigator.pop(context, false),
             child: const Text('Cancelar'),
@@ -1017,8 +769,7 @@ class _UserProfileScreenState extends State<UserProfileScreen>
               foregroundColor: Colors.black,
               padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
               shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(10),
-              ),
+                  borderRadius: BorderRadius.circular(10)),
             ),
             onPressed: () => Navigator.pop(context, true),
             icon: const Icon(Icons.logout),
@@ -1027,13 +778,13 @@ class _UserProfileScreenState extends State<UserProfileScreen>
         ],
       ),
     );
-    if (ok == true) {
-      await _signOut();
-    }
+
+    if (ok == true) await _signOut();
   }
 
-  // ------------------- UI -------------------
-
+  // ─────────────────────────────
+  // UI helpers
+  // ─────────────────────────────
   Future<void> _handleBack() async {
     final navigator = Navigator.of(context);
     final didPop = await navigator.maybePop();
@@ -1083,55 +834,38 @@ class _UserProfileScreenState extends State<UserProfileScreen>
     return '$dd/$mm/$yy';
   }
 
-  Widget _readOnlyPaymentCard() {
-    final label = (_paymentMethod ?? '').trim();
-    return Container(
-      padding: const EdgeInsets.fromLTRB(12, 12, 12, 12),
-      decoration: BoxDecoration(
-        color: CapColors.surfaceAlt,
-        borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: Colors.white12),
-        boxShadow: const [
-          BoxShadow(
-            color: Colors.black26,
-            blurRadius: 10,
-            offset: Offset(2, 4),
-          ),
-        ],
-      ),
-      child: Row(
-        children: [
-          Container(
-            width: 44,
-            height: 44,
-            decoration: BoxDecoration(
-              color: Colors.white.withOpacity(.06),
-              borderRadius: BorderRadius.circular(12),
-              border: Border.all(color: Colors.white10),
-            ),
-            child: const Icon(Icons.credit_card, color: CapColors.text),
-          ),
-          const SizedBox(width: 12),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  label.isEmpty ? 'Método en Stripe' : label,
-                  style: const TextStyle(
-                    color: CapColors.text,
-                    fontWeight: FontWeight.w800,
-                  ),
+  Widget _infoRow({required String label, required String value}) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 6, 16, 0),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+        decoration: BoxDecoration(
+          color: CapColors.surfaceAlt,
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: Colors.white12),
+        ),
+        child: Row(
+          children: [
+            Expanded(
+              child: Text(
+                label,
+                style: const TextStyle(
+                  color: CapColors.textMuted,
+                  fontWeight: FontWeight.w700,
+                  letterSpacing: .4,
                 ),
-                const SizedBox(height: 2),
-                const Text(
-                  'Se gestiona desde el portal de Stripe.',
-                  style: TextStyle(color: CapColors.textMuted, fontSize: 12),
-                ),
-              ],
+              ),
             ),
-          ),
-        ],
+            const SizedBox(width: 10),
+            Text(
+              value,
+              style: const TextStyle(
+                color: CapColors.text,
+                fontWeight: FontWeight.w900,
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -1209,6 +943,11 @@ class _UserProfileScreenState extends State<UserProfileScreen>
                             ),
                           ),
                           const Spacer(),
+                          IconButton(
+                            onPressed: _signingOut ? null : _confirmSignOut,
+                            icon:
+                                const Icon(Icons.logout, color: CapColors.text),
+                          ),
                         ],
                       ),
                     ),
@@ -1321,7 +1060,12 @@ class _UserProfileScreenState extends State<UserProfileScreen>
                                       )
                                     ],
                                   ),
-                                  child: const Icon(Icons.edit, size: 18),
+                                  // ✅ icono negro (visible)
+                                  child: const Icon(
+                                    Icons.edit,
+                                    size: 18,
+                                    color: Colors.black,
+                                  ),
                                 ),
                               ),
                             ),
@@ -1418,11 +1162,11 @@ class _UserProfileScreenState extends State<UserProfileScreen>
                       ),
                     ),
 
-                    // ===== Suscripción =====
+                    // ===== Compras (IAP) =====
                     Padding(
-                      padding: const EdgeInsets.fromLTRB(16, 8, 16, 8),
+                      padding: const EdgeInsets.fromLTRB(16, 10, 16, 6),
                       child: Text(
-                        'DATOS DE LA SUSCRIPCIÓN',
+                        'COMPRAS',
                         style:
                             Theme.of(context).textTheme.titleMedium?.copyWith(
                                   color: CapColors.gold,
@@ -1430,73 +1174,45 @@ class _UserProfileScreenState extends State<UserProfileScreen>
                                 ),
                       ),
                     ),
-                    SubscriptionRow(
+                    _infoRow(
                         label: 'MIEMBRO DESDE', value: _fmtDate(_createdAt)),
-                    SubscriptionRow(
-                        label: 'FECHA DE INICIO', value: _fmtDate(_startDate)),
-                    SubscriptionRow(
-                        label: 'FECHA DE TÉRMINO', value: _fmtDate(_endDate)),
-                    SubscriptionRow(
-                      label: 'MÉTODO DE PAGO',
-                      value: _paymentMethod ??
-                          (_primaryMethod(_paymentMethods)?.label ?? '--'),
+                    _infoRow(
+                      label: 'DOCUMENTOS COMPRADOS',
+                      value: _purchasedProductIds.length.toString(),
                     ),
-
-                    if (_subscriptionState != null)
-                      Padding(
-                        padding: const EdgeInsets.symmetric(
-                            horizontal: 16, vertical: 6),
-                        child: Align(
-                          alignment: Alignment.centerLeft,
-                          child: Builder(
-                            builder: (_) {
-                              final isActive = _subscriptionState ==
-                                      SubscriptionState.active &&
-                                  !_cancelAtPeriodEnd;
-                              final bg = isActive
-                                  ? Colors.greenAccent
-                                  : Colors.white10;
-                              final textColor =
-                                  isActive ? Colors.black : CapColors.text;
-                              return Chip(
-                                backgroundColor: bg,
-                                label: Text(
-                                  _subscriptionLabel(),
-                                  style: TextStyle(
-                                    color: textColor,
-                                    fontWeight: FontWeight.w600,
-                                  ),
-                                ),
-                              );
-                            },
-                          ),
-                        ),
-                      ),
-
-                    if (_cancelAtPeriodEnd)
-                      Padding(
-                        padding: const EdgeInsets.symmetric(
-                            horizontal: 16, vertical: 4),
-                        child: Container(
-                          padding: const EdgeInsets.all(12),
-                          decoration: BoxDecoration(
-                            color: Colors.orange.withOpacity(.15),
-                            borderRadius: BorderRadius.circular(12),
-                          ),
-                          child: Text(
-                            _cancelsAt == null
-                                ? 'La suscripción se cancelará al final del periodo actual.'
-                                : 'La suscripción seguirá activa hasta ${_fmtDate(_cancelsAt)}.',
-                            style: const TextStyle(color: CapColors.text),
-                          ),
-                        ),
-                      ),
-
-                    // Botón para solicitar cancelación manual
                     Padding(
-                      padding: const EdgeInsets.fromLTRB(16, 4, 16, 8),
+                      padding: const EdgeInsets.fromLTRB(16, 10, 16, 6),
                       child: Row(
                         children: [
+                          Expanded(
+                            child: OutlinedButton(
+                              style: OutlinedButton.styleFrom(
+                                side:
+                                    const BorderSide(color: CapColors.goldDark),
+                                foregroundColor: CapColors.gold,
+                                padding:
+                                    const EdgeInsets.symmetric(vertical: 12),
+                                shape: RoundedRectangleBorder(
+                                  borderRadius: BorderRadius.circular(10),
+                                ),
+                              ),
+                              onPressed: _restoring ? null : _restorePurchases,
+                              child: _restoring
+                                  ? const SizedBox(
+                                      width: 16,
+                                      height: 16,
+                                      child: CircularProgressIndicator(
+                                        strokeWidth: 2,
+                                      ),
+                                    )
+                                  : const Text(
+                                      'Restaurar compras',
+                                      style: TextStyle(
+                                          fontWeight: FontWeight.w800),
+                                    ),
+                            ),
+                          ),
+                          const SizedBox(width: 12),
                           Expanded(
                             child: ElevatedButton(
                               style: ElevatedButton.styleFrom(
@@ -1508,125 +1224,16 @@ class _UserProfileScreenState extends State<UserProfileScreen>
                                   borderRadius: BorderRadius.circular(10),
                                 ),
                               ),
-                              onPressed: _confirmManualCancellation,
+                              onPressed: () =>
+                                  Navigator.pushNamed(context, '/biblioteca'),
                               child: const Text(
-                                'Solicitar cancelación de suscripción',
-                                style: TextStyle(fontWeight: FontWeight.w700),
-                                textAlign: TextAlign.center,
+                                'Ir a Biblioteca',
+                                style: TextStyle(fontWeight: FontWeight.w900),
                               ),
                             ),
                           ),
                         ],
                       ),
-                    ),
-                    Padding(
-                      padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
-                      child: Row(
-                        children: [
-                          Expanded(
-                            child: OutlinedButton(
-                              style: OutlinedButton.styleFrom(
-                                side:
-                                    const BorderSide(color: CapColors.goldDark),
-                                foregroundColor: CapColors.gold,
-                                padding:
-                                    const EdgeInsets.symmetric(vertical: 12),
-                                shape: RoundedRectangleBorder(
-                                  borderRadius: BorderRadius.circular(10),
-                                ),
-                              ),
-                              onPressed: _openManageSubscription,
-                              child: const Text(
-                                'Administrar suscripción',
-                                style: TextStyle(fontWeight: FontWeight.w700),
-                              ),
-                            ),
-                          ),
-                          const SizedBox(width: 12),
-                          Expanded(
-                            child: OutlinedButton(
-                              style: OutlinedButton.styleFrom(
-                                side:
-                                    const BorderSide(color: CapColors.goldDark),
-                                foregroundColor: CapColors.gold,
-                                padding:
-                                    const EdgeInsets.symmetric(vertical: 12),
-                                shape: RoundedRectangleBorder(
-                                  borderRadius: BorderRadius.circular(10),
-                                ),
-                              ),
-                              onPressed: _restoreSubscription,
-                              child: const Text(
-                                'Restaurar compra',
-                                style: TextStyle(fontWeight: FontWeight.w700),
-                                textAlign: TextAlign.center,
-                              ),
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-
-                    // ===== Métodos de pago =====
-                    Padding(
-                      padding: const EdgeInsets.fromLTRB(16, 16, 16, 6),
-                      child: Row(
-                        children: [
-                          Text(
-                            'MÉTODOS DE PAGO',
-                            style: Theme.of(context)
-                                .textTheme
-                                .titleMedium
-                                ?.copyWith(
-                                  color: CapColors.gold,
-                                  fontWeight: FontWeight.w800,
-                                ),
-                          ),
-                          const Spacer(),
-                          // ✅ quitado botón "+" (solo Stripe)
-                        ],
-                      ),
-                    ),
-
-                    // ✅ Botón Stripe Portal renombrado
-                    Padding(
-                      padding: const EdgeInsets.fromLTRB(16, 0, 16, 10),
-                      child: OutlinedButton.icon(
-                        style: OutlinedButton.styleFrom(
-                          side: const BorderSide(color: CapColors.goldDark),
-                          foregroundColor: CapColors.gold,
-                          backgroundColor: CapColors.surface,
-                          padding: const EdgeInsets.symmetric(
-                              vertical: 12, horizontal: 12),
-                          shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(10),
-                          ),
-                        ),
-                        onPressed: _openingStripePortal
-                            ? null
-                            : _openStripeCustomerPortalLink,
-                        icon: _openingStripePortal
-                            ? const SizedBox(
-                                width: 16,
-                                height: 16,
-                                child: CircularProgressIndicator(
-                                  strokeWidth: 2,
-                                  valueColor: AlwaysStoppedAnimation<Color>(
-                                      CapColors.gold),
-                                ),
-                              )
-                            : const Icon(Icons.credit_card),
-                        label: const Text(
-                          'Cambiar método de pago',
-                          style: TextStyle(fontWeight: FontWeight.w800),
-                        ),
-                      ),
-                    ),
-
-                    // ✅ Solo visual (sin agregar/eliminar desde la app)
-                    Padding(
-                      padding: const EdgeInsets.symmetric(horizontal: 16),
-                      child: _readOnlyPaymentCard(),
                     ),
 
                     // ===== Favoritos =====

@@ -3,43 +3,29 @@ import 'dart:async';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
-import 'package:shared_preferences/shared_preferences.dart';
 
-import '../services/subscription_service.dart';
 import '../theme/cap_colors.dart';
 import 'email_verification_screen.dart';
-import 'home_screen.dart';
 import 'login_screen.dart' as login;
-import 'subscription_required_screen.dart' as sub;
 
-class AuthGate extends StatelessWidget {
-  const AuthGate({super.key});
+class AuthGate extends StatefulWidget {
+  const AuthGate({
+    super.key,
+    required this.child,
+  });
 
-  @override
-  Widget build(BuildContext context) {
-    return const SubscriptionGate(child: HomeScreen());
-  }
-}
-
-class SubscriptionGate extends StatefulWidget {
-  const SubscriptionGate({super.key, required this.child});
   final Widget child;
 
   @override
-  State<SubscriptionGate> createState() => _SubscriptionGateState();
+  State<AuthGate> createState() => _AuthGateState();
 }
 
-class _SubscriptionGateState extends State<SubscriptionGate>
-    with WidgetsBindingObserver {
+class _AuthGateState extends State<AuthGate> with WidgetsBindingObserver {
   final _auth = FirebaseAuth.instance;
   final _db = FirebaseFirestore.instance;
-  late final SubscriptionService _subs = SubscriptionService(firestore: _db);
 
-  Timer? _expiryTimer;
-  DateTime? _scheduledFor;
-
-  // ✅ estrictísimo: solo ACTIVE
-  bool _canAccess(SubscriptionStatus s) => s.state == SubscriptionState.active;
+  String? _ensuredUid;
+  Future<void>? _ensureFuture;
 
   @override
   void initState() {
@@ -49,19 +35,16 @@ class _SubscriptionGateState extends State<SubscriptionGate>
 
   @override
   void dispose() {
-    _expiryTimer?.cancel();
     WidgetsBinding.instance.removeObserver(this);
     super.dispose();
   }
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    // ✅ cada vez que regresa la app, fuerza refresh desde server
+    // Cuando vuelve la app, recarga el usuario para refrescar emailVerified.
     if (state == AppLifecycleState.resumed) {
       final u = _auth.currentUser;
       if (u != null) {
-        unawaited(_refreshServer(u.uid));
-        // también actualiza emailVerified cuando vuelve
         unawaited(u.reload().then((_) {
           if (mounted) setState(() {});
         }));
@@ -69,68 +52,34 @@ class _SubscriptionGateState extends State<SubscriptionGate>
     }
   }
 
-  void _scheduleRecheck(SubscriptionStatus status) {
-    final now = DateTime.now().toUtc();
-    DateTime? next;
+  Future<void> _ensureUserDoc(User user) async {
+    // evita repetir en cada rebuild
+    if (_ensuredUid == user.uid && _ensureFuture != null) return _ensureFuture!;
+    _ensuredUid = user.uid;
 
-    // Fin de acceso: endDate o graceEndsAt o cancelsAt
-    final candidates = <DateTime?>[
-      status.endDate,
-      status.graceEndsAt,
-      status.cancelsAt,
-    ];
+    final ref = _db.collection('users').doc(user.uid);
 
-    for (final d in candidates) {
-      if (d == null) continue;
-      if (d.isAfter(now)) {
-        if (next == null || d.isBefore(next)) next = d;
+    _ensureFuture = () async {
+      final snap = await ref.get();
+      if (snap.exists) {
+        // opcional: actualizar lastLoginAt sin pisar createdAt
+        await ref.set(
+          {'lastLoginAt': FieldValue.serverTimestamp()},
+          SetOptions(merge: true),
+        );
+        return;
       }
-    }
 
-    if (next == null) {
-      _expiryTimer?.cancel();
-      _scheduledFor = null;
-      return;
-    }
+      // Crea el doc mínimo. Ajusta campos según lo que use tu app.
+      await ref.set({
+        'uid': user.uid,
+        'email': (user.email ?? '').trim(),
+        'createdAt': FieldValue.serverTimestamp(),
+        'lastLoginAt': FieldValue.serverTimestamp(),
+      }, SetOptions(merge: true));
+    }();
 
-    if (_scheduledFor != null && next.isAtSameMomentAs(_scheduledFor!)) return;
-
-    _scheduledFor = next;
-    _expiryTimer?.cancel();
-
-    final delay = next.difference(now) + const Duration(seconds: 2);
-    _expiryTimer = Timer(delay, () {
-      if (mounted) setState(() {});
-    });
-  }
-
-  Future<void> _cacheForOffline(SubscriptionStatus st) async {
-    final prefs = await SharedPreferences.getInstance();
-    final end = st.endDate?.millisecondsSinceEpoch;
-    final grace = st.graceEndsAt?.millisecondsSinceEpoch;
-
-    if (end != null) {
-      await prefs.setInt('sub_end_ms', end);
-    } else {
-      await prefs.remove('sub_end_ms');
-    }
-
-    if (grace != null) {
-      await prefs.setInt('sub_grace_end_ms', grace);
-    } else {
-      await prefs.remove('sub_grace_end_ms');
-    }
-
-    await prefs.setString('sub_state', st.state.name);
-    await prefs.setInt(
-        'sub_cached_at_ms', DateTime.now().millisecondsSinceEpoch);
-  }
-
-  Future<SubscriptionStatus> _refreshServer(String uid) async {
-    final s = await _subs.refreshSubscriptionStatus(uid);
-    _scheduleRecheck(s);
-    unawaited(_cacheForOffline(s));
-    return s;
+    return _ensureFuture!;
   }
 
   @override
@@ -139,14 +88,7 @@ class _SubscriptionGateState extends State<SubscriptionGate>
       stream: _auth.authStateChanges(),
       builder: (context, authSnap) {
         if (authSnap.connectionState == ConnectionState.waiting) {
-          return const Scaffold(
-            backgroundColor: CapColors.bgTop,
-            body: Center(
-              child: CircularProgressIndicator(
-                valueColor: AlwaysStoppedAnimation<Color>(CapColors.gold),
-              ),
-            ),
-          );
+          return const _GateLoading();
         }
 
         final user = authSnap.data;
@@ -154,12 +96,11 @@ class _SubscriptionGateState extends State<SubscriptionGate>
           return const login.LoginScreen();
         }
 
-        // ✅ PASO 1: exigir email verificado antes de suscripción/pago
+        // 1) Exigir email verificado
         if (!user.emailVerified) {
           return EmailVerificationScreen(
             email: (user.email ?? '').trim(),
             onVerified: () async {
-              // recarga y fuerza rebuild para que pase al siguiente paso
               await _auth.currentUser?.reload();
               if (mounted) setState(() {});
             },
@@ -172,56 +113,85 @@ class _SubscriptionGateState extends State<SubscriptionGate>
           );
         }
 
-        // ✅ PASO 2: validación de doc + suscripción
-        return StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
-          stream: _db
-              .collection('users')
-              .doc(user.uid)
-              .snapshots(includeMetadataChanges: true),
-          builder: (context, userSnap) {
-            if (userSnap.connectionState == ConnectionState.waiting) {
-              return const Scaffold(
+        // 2) Asegurar users/{uid} y luego entrar a child
+        return FutureBuilder<void>(
+          future: _ensureUserDoc(user),
+          builder: (context, snap) {
+            if (snap.connectionState == ConnectionState.waiting) {
+              return const _GateLoading();
+            }
+
+            if (snap.hasError) {
+              return Scaffold(
                 backgroundColor: CapColors.bgTop,
                 body: Center(
-                  child: CircularProgressIndicator(
-                    valueColor: AlwaysStoppedAnimation<Color>(CapColors.gold),
+                  child: Padding(
+                    padding: const EdgeInsets.all(18),
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        const Text(
+                          'No pudimos inicializar tu cuenta.',
+                          style: TextStyle(
+                            color: Colors.white,
+                            fontWeight: FontWeight.w800,
+                          ),
+                          textAlign: TextAlign.center,
+                        ),
+                        const SizedBox(height: 10),
+                        Text(
+                          '${snap.error}',
+                          style: const TextStyle(color: Colors.white70),
+                          textAlign: TextAlign.center,
+                        ),
+                        const SizedBox(height: 14),
+                        ElevatedButton(
+                          onPressed: () => setState(() {
+                            // fuerza reintento real
+                            _ensuredUid = null;
+                            _ensureFuture = null;
+                          }),
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: CapColors.gold,
+                            foregroundColor: Colors.black,
+                          ),
+                          child: const Text('Reintentar'),
+                        ),
+                        const SizedBox(height: 8),
+                        TextButton(
+                          onPressed: () => _auth.signOut(),
+                          child: const Text(
+                            'Cerrar sesión',
+                            style: TextStyle(color: CapColors.gold),
+                          ),
+                        ),
+                      ],
+                    ),
                   ),
                 ),
               );
             }
 
-            if (userSnap.data?.exists != true) {
-              unawaited(SubscriptionService.ensureUserDoc(user));
-              return const Scaffold(
-                backgroundColor: CapColors.bgTop,
-                body: Center(
-                  child: CircularProgressIndicator(
-                    valueColor: AlwaysStoppedAnimation<Color>(CapColors.gold),
-                  ),
-                ),
-              );
-            }
-
-            final status = SubscriptionStatus.fromSnapshot(userSnap.data!);
-
-            _scheduleRecheck(status);
-            unawaited(_cacheForOffline(status));
-
-            if (_canAccess(status)) {
-              return widget.child;
-            }
-
-            return sub.SubscriptionRequiredScreen(
-              status: status,
-              onRefresh: () => _refreshServer(user.uid),
-              onSignOut: () async => _auth.signOut(),
-              errorMessage: userSnap.hasError
-                  ? 'No pudimos validar tu suscripción.'
-                  : null,
-            );
+            return widget.child;
           },
         );
       },
+    );
+  }
+}
+
+class _GateLoading extends StatelessWidget {
+  const _GateLoading();
+
+  @override
+  Widget build(BuildContext context) {
+    return const Scaffold(
+      backgroundColor: CapColors.bgTop,
+      body: Center(
+        child: CircularProgressIndicator(
+          valueColor: AlwaysStoppedAnimation<Color>(CapColors.gold),
+        ),
+      ),
     );
   }
 }
