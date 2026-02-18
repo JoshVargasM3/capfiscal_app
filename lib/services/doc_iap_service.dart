@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:cloud_functions/cloud_functions.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:in_app_purchase/in_app_purchase.dart';
 
@@ -11,11 +12,14 @@ class DocIapService {
   DocIapService({
     required FirebaseAuth auth,
     required FirebaseFirestore firestore,
+    FirebaseFunctions? functions,
   })  : _auth = auth,
-        _firestore = firestore;
+        _firestore = firestore,
+        _functions = functions ?? FirebaseFunctions.instance;
 
   final FirebaseAuth _auth;
   final FirebaseFirestore _firestore;
+  final FirebaseFunctions _functions;
 
   final InAppPurchase _iap = InAppPurchase.instance;
 
@@ -78,26 +82,19 @@ class DocIapService {
     return snap.docs.map((d) => d.id).toSet();
   }
 
-  /// Entrega la compra (marca purchased) cuando el store reporte PURCHASED/RESTORED.
-  /// En producción: aquí deberías llamar un Cloud Function para validar recibo/token.
+  /// Entrega la compra llamando backend (auth + app check).
+  /// Nota: el backend debe validar recibo/token con Apple/Google para endurecer fraudes.
   Future<void> grantEntitlement(PurchaseDetails purchase) async {
-    final uid = _auth.currentUser?.uid;
-    if (uid == null) return;
+    if (_auth.currentUser == null) return;
 
-    await _firestore
-        .collection('users')
-        .doc(uid)
-        .collection('doc_purchases')
-        .doc(purchase.productID)
-        .set({
+    final callable = _functions.httpsCallable('registerDocumentPurchase');
+    await callable.call({
       'productId': purchase.productID,
       'status': purchase.status.name,
-      'purchaseID': purchase.purchaseID,
+      'purchaseId': purchase.purchaseID,
       'transactionDate': purchase.transactionDate,
       'source': purchase.verificationData.source,
-      // Guardamos el payload; en producción no lo uses como “verdad” sin validar.
       'verificationData': purchase.verificationData.serverVerificationData,
-      'updatedAt': FieldValue.serverTimestamp(),
-    }, SetOptions(merge: true));
+    });
   }
 }
