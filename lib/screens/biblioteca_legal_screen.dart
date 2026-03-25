@@ -2,23 +2,20 @@
 import 'dart:async';
 import 'dart:io';
 
-import 'package:flutter/material.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_storage/firebase_storage.dart';
+import 'package:flutter/material.dart';
+import 'package:in_app_purchase/in_app_purchase.dart';
 import 'package:open_filex/open_filex.dart';
 import 'package:path_provider/path_provider.dart';
-import 'package:firebase_auth/firebase_auth.dart';
-import 'package:cloud_firestore/cloud_firestore.dart';
-import 'package:in_app_purchase/in_app_purchase.dart';
-
-import '../widgets/app_top_bar.dart';
-import '../widgets/app_bottom_nav.dart';
-import '../widgets/custom_drawer.dart';
 
 import '../helpers/favorites_manager.dart';
 import '../helpers/view_mode.dart';
-
 import '../services/doc_iap_service.dart';
-import 'document_preview_screen.dart';
+import '../widgets/app_bottom_nav.dart';
+import '../widgets/app_top_bar.dart';
+import '../widgets/custom_drawer.dart';
 
 /// === Paleta CAPFISCAL (oscuro + dorado) ===
 class _CapColors {
@@ -30,6 +27,102 @@ class _CapColors {
   static const Color textMuted = Color(0xFFBEBEC6);
   static const Color gold = Color(0xFFE1B85C);
   static const Color goldDark = Color(0xFFB88F30);
+}
+
+/// Modelo: archivo dentro de un bundle
+class BundleFile {
+  final String id;
+  final String name; // opcional, si no viene se usa el nombre del archivo
+  final int order;
+  final String storagePath; // ej: docs/djn_multas_contabilidad/archivo.docx
+  final String type; // pdf/docx/etc (o extensión)
+
+  const BundleFile({
+    required this.id,
+    required this.name,
+    required this.order,
+    required this.storagePath,
+    required this.type,
+  });
+
+  String get fileNameFromPath {
+    final parts = storagePath.split('/');
+    return parts.isEmpty ? storagePath : parts.last;
+  }
+
+  factory BundleFile.fromMap(Map<String, dynamic> m) {
+    final rawId = (m['id'] ?? '').toString().trim();
+    final rawName = (m['name'] ?? '').toString().trim();
+    final rawPath = (m['storagePath'] ?? '').toString().trim();
+    final rawType = (m['type'] ?? '').toString().trim();
+    final rawOrder = m['order'];
+
+    final int parsedOrder = rawOrder is int
+        ? rawOrder
+        : int.tryParse((rawOrder ?? '').toString()) ?? 999;
+
+    final fallbackName = rawPath.isEmpty ? 'Archivo' : rawPath.split('/').last;
+
+    return BundleFile(
+      id: rawId.isEmpty ? 'file' : rawId,
+      name: rawName.isEmpty ? fallbackName : rawName,
+      order: parsedOrder,
+      storagePath: rawPath,
+      type: rawType.isEmpty ? _extFromFilename(fallbackName) : rawType,
+    );
+  }
+
+  static String _extFromFilename(String name) {
+    final n = name.toLowerCase().trim();
+    final dot = n.lastIndexOf('.');
+    if (dot < 0 || dot == n.length - 1) return '';
+    return n.substring(dot + 1);
+  }
+}
+
+/// Modelo: bundle (documento) en Firestore /documents/{id}
+class DocBundle {
+  final String id; // docId
+  final bool active;
+  final String title;
+  final String description;
+  final int price;
+  final String currency;
+  final List<BundleFile> files;
+
+  const DocBundle({
+    required this.id,
+    required this.active,
+    required this.title,
+    required this.description,
+    required this.price,
+    required this.currency,
+    required this.files,
+  });
+
+  factory DocBundle.fromDoc(QueryDocumentSnapshot<Map<String, dynamic>> doc) {
+    final d = doc.data();
+    final rawFiles =
+        (d['files'] is List) ? List.from(d['files'] as List) : const [];
+
+    final files = rawFiles
+        .whereType<Map>()
+        .map((e) => BundleFile.fromMap(Map<String, dynamic>.from(e)))
+        .toList()
+      ..sort((a, b) => a.order.compareTo(b.order));
+
+    return DocBundle(
+      id: doc.id,
+      active: (d['active'] == true),
+      title: (d['title'] ?? doc.id).toString(),
+      description: (d['description'] ?? '').toString(),
+      price: (d['price'] is int)
+          ? d['price'] as int
+          : int.tryParse('${d['price'] ?? 0}') ?? 0,
+      currency: (d['currency'] ?? 'MXN').toString(),
+      files: files,
+    );
+  }
 }
 
 class BibliotecaLegalScreen extends StatefulWidget {
@@ -48,18 +141,17 @@ class BibliotecaLegalScreen extends StatefulWidget {
 
 class _BibliotecaLegalScreenState extends State<BibliotecaLegalScreen> {
   final GlobalKey<ScaffoldState> _scaffoldKey = GlobalKey<ScaffoldState>();
+
   late final FirebaseStorage _storage;
   late final FirebaseAuth _auth;
 
   late final DocIapService _iap;
   StreamSubscription<List<PurchaseDetails>>? _purchaseSub;
 
-  // ✅ Carpetas “fuente de verdad”
-  static const String _docsFolder = 'docs';
   static const String _thumbsFolder = 'docs_thumbs';
 
-  List<Reference> _files = [];
   bool _loading = true;
+  List<DocBundle> _bundles = [];
 
   String _search = '';
   final Set<String> _activeCategories = <String>{};
@@ -74,11 +166,9 @@ class _BibliotecaLegalScreenState extends State<BibliotecaLegalScreen> {
 
   bool _appliedRouteQuery = false;
 
-  /// Compras y estados UI
   Set<String> _purchasedProductIds = <String>{};
   final Set<String> _purchaseInProgress = <String>{};
 
-  /// ✅ Cache de thumbnails (para que NO “parpadeen” ni se pidan 50 veces)
   final Map<String, Future<String?>> _thumbFutureCache = {};
 
   @override
@@ -94,10 +184,12 @@ class _BibliotecaLegalScreenState extends State<BibliotecaLegalScreen> {
 
     _purchaseSub = _iap.purchaseStream.listen(
       _handlePurchaseUpdates,
-      onError: (_) {},
+      onError: (e) {
+        debugPrint('❌ purchaseStream error: $e');
+      },
     );
 
-    _fetchFiles();
+    _fetchBundles();
   }
 
   @override
@@ -110,6 +202,7 @@ class _BibliotecaLegalScreenState extends State<BibliotecaLegalScreen> {
   void didChangeDependencies() {
     super.didChangeDependencies();
     if (_appliedRouteQuery) return;
+
     final args = ModalRoute.of(context)?.settings.arguments;
     if (args is Map &&
         args['query'] is String &&
@@ -125,19 +218,36 @@ class _BibliotecaLegalScreenState extends State<BibliotecaLegalScreen> {
   }
 
   // ─────────────────────────────
-  // Helpers: docKey/productId
+  // Helpers
   // ─────────────────────────────
-  String _docKeyFromFilename(String name) {
-    var base = name;
-    final dot = base.lastIndexOf('.');
-    if (dot > 0) base = base.substring(0, dot);
+  String _productIdForBundle(DocBundle b) => 'capfiscal_bundle_${b.id}';
+  String _bundleFavKey(DocBundle b) => 'bundle:${b.id}';
 
-    base = base.toLowerCase().trim();
-    base = base.replaceAll(RegExp(r'\s+'), '_');
-    base = base.replaceAll(RegExp(r'[^a-z0-9_]+'), '');
-    return base;
+  String _extFromName(String name) {
+    final n = name.toLowerCase().trim();
+    final dot = n.lastIndexOf('.');
+    if (dot < 0 || dot == n.length - 1) return '';
+    return n.substring(dot + 1);
   }
 
+  IconData _iconForFile(BundleFile f) {
+    final e = f.type.isNotEmpty ? f.type.toLowerCase() : _extFromName(f.name);
+    if (e == 'pdf') return Icons.picture_as_pdf;
+    if (e == 'doc' || e == 'docx' || e == 'rtf' || e == 'txt')
+      return Icons.description;
+    if (e == 'xls' || e == 'xlsx' || e == 'csv') return Icons.table_chart;
+    if (e == 'ppt' || e == 'pptx') return Icons.slideshow;
+    if (e == 'png' || e == 'jpg' || e == 'jpeg' || e == 'webp' || e == 'gif')
+      return Icons.image;
+    if (e == 'zip' || e == 'rar' || e == '7z') return Icons.archive;
+    return Icons.insert_drive_file;
+  }
+
+  // ─────────────────────────────
+  // ✅ Thumb para bundle:
+  // 1) docs_thumbs/<bundleId>.png/jpg/jpeg/webp
+  // 2) fallback: docs_thumbs/<primer-archivo-sin-ext>.png...
+  // ─────────────────────────────
   String _baseNameNoExt(String name) {
     var base = name;
     final dot = base.lastIndexOf('.');
@@ -145,52 +255,24 @@ class _BibliotecaLegalScreenState extends State<BibliotecaLegalScreen> {
     return base;
   }
 
-  String _ext(String name) {
-    final n = name.toLowerCase().trim();
-    final dot = n.lastIndexOf('.');
-    if (dot < 0 || dot == n.length - 1) return '';
-    return n.substring(dot + 1);
-  }
-
-  bool _isPdf(Reference ref) => _ext(ref.name) == 'pdf';
-
-  bool _isImage(Reference ref) {
-    final e = _ext(ref.name);
-    return e == 'png' || e == 'jpg' || e == 'jpeg' || e == 'webp' || e == 'gif';
-  }
-
-  IconData _iconForRef(Reference ref) {
-    final e = _ext(ref.name);
-    if (e == 'pdf') return Icons.picture_as_pdf;
-    if (e == 'doc' || e == 'docx' || e == 'rtf' || e == 'txt') {
-      return Icons.description;
-    }
-    if (e == 'xls' || e == 'xlsx' || e == 'csv') return Icons.table_chart;
-    if (e == 'ppt' || e == 'pptx') return Icons.slideshow;
-    if (_isImage(ref)) return Icons.image;
-    if (e == 'zip' || e == 'rar' || e == '7z') return Icons.archive;
-    return Icons.insert_drive_file;
-  }
-
-  /// Product ID que debes crear en iOS/Android stores.
-  /// EJ: capfiscal_doc_contrato_arrendamiento_v1
-  String _productIdForRef(Reference ref) {
-    final key = _docKeyFromFilename(ref.name);
-    return 'capfiscal_doc_$key';
-  }
-
-  // ─────────────────────────────
-  // ✅ Thumbnail: docs_thumbs/<base>.png (o fallback jpg/jpeg/webp)
-  // ─────────────────────────────
-  Future<String?> _resolveThumbUrl(Reference docRef) async {
-    final base = _baseNameNoExt(docRef.name);
-
+  Future<String?> _resolveThumbUrlForBundle(DocBundle b) async {
     final candidates = <String>[
-      '$_thumbsFolder/$base.png',
-      '$_thumbsFolder/$base.jpg',
-      '$_thumbsFolder/$base.jpeg',
-      '$_thumbsFolder/$base.webp',
+      '$_thumbsFolder/${b.id}.png',
+      '$_thumbsFolder/${b.id}.jpg',
+      '$_thumbsFolder/${b.id}.jpeg',
+      '$_thumbsFolder/${b.id}.webp',
     ];
+
+    if (b.files.isNotEmpty) {
+      final firstName = b.files.first.fileNameFromPath;
+      final base = _baseNameNoExt(firstName);
+      candidates.addAll([
+        '$_thumbsFolder/$base.png',
+        '$_thumbsFolder/$base.jpg',
+        '$_thumbsFolder/$base.jpeg',
+        '$_thumbsFolder/$base.webp',
+      ]);
+    }
 
     for (final path in candidates) {
       try {
@@ -201,23 +283,19 @@ class _BibliotecaLegalScreenState extends State<BibliotecaLegalScreen> {
     return null;
   }
 
-  Future<String?> _thumbUrlForDoc(Reference docRef) {
-    final key = docRef.fullPath; // "docs/xxx.ext"
-    return _thumbFutureCache.putIfAbsent(key, () => _resolveThumbUrl(docRef));
+  Future<String?> _thumbUrlForBundle(DocBundle b) {
+    return _thumbFutureCache.putIfAbsent(
+        b.id, () => _resolveThumbUrlForBundle(b));
   }
 
-  Widget _docThumb(Reference docRef) {
+  Widget _bundleThumb(DocBundle b) {
     return FutureBuilder<String?>(
-      future: _thumbUrlForDoc(docRef),
+      future: _thumbUrlForBundle(b),
       builder: (context, snap) {
         final url = snap.data;
         if (url == null || url.isEmpty) {
           return Center(
-            child: Icon(
-              _iconForRef(docRef),
-              color: _CapColors.gold,
-              size: 42,
-            ),
+            child: Icon(Icons.folder_zip, color: _CapColors.gold, size: 46),
           );
         }
         return ClipRRect(
@@ -226,11 +304,7 @@ class _BibliotecaLegalScreenState extends State<BibliotecaLegalScreen> {
             url,
             fit: BoxFit.cover,
             errorBuilder: (_, __, ___) => Center(
-              child: Icon(
-                _iconForRef(docRef),
-                color: _CapColors.gold,
-                size: 42,
-              ),
+              child: Icon(Icons.folder_zip, color: _CapColors.gold, size: 46),
             ),
           ),
         );
@@ -239,39 +313,45 @@ class _BibliotecaLegalScreenState extends State<BibliotecaLegalScreen> {
   }
 
   // ─────────────────────────────
-  // Fetch + IAP bootstrap
+  // ✅ Fetch bundles (Firestore) + IAP bootstrap
   // ─────────────────────────────
-  Future<void> _fetchFiles() async {
+  Future<void> _fetchBundles() async {
     setState(() => _loading = true);
 
     try {
-      final result = await _storage.ref(_docsFolder).listAll();
+      debugPrint(
+          '📦 Fetching bundles from Firestore: /documents where active==true');
 
-      // ✅ Ahora mostramos TODO tipo de documento (no solo PDF)
-      _files = result.items.toList()
-        ..sort((a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()));
+      final snap = await FirebaseFirestore.instance
+          .collection('documents')
+          .where('active', isEqualTo: true)
+          .orderBy(FieldPath.documentId)
+          .get();
 
-      _thumbFutureCache.removeWhere(
-        (k, _) => !_files.any((r) => r.fullPath == k),
-      );
+      final bundles = snap.docs.map(DocBundle.fromDoc).toList();
 
-      // 1) Compras del usuario (Firestore)
+      debugPrint('📦 Bundles encontrados: ${bundles.length}');
+
+      _bundles = bundles;
+
+      // compras del usuario
       _purchasedProductIds = await _iap.loadPurchasedProductIds();
 
-      // 2) Catálogo IAP (para todos los docs)
-      final productIds = _files.map(_productIdForRef).toSet();
+      // cargar catálogo IAP por bundle
+      final productIds = _bundles.map(_productIdForBundle).toSet();
       await _iap.loadProducts(productIds);
 
-      // 3) Restaurar compras (store)
+      // restaurar compras
       await _iap.restorePurchases();
 
       if (!mounted) return;
       setState(() => _loading = false);
     } catch (e) {
+      debugPrint('❌ Error _fetchBundles: $e');
       if (!mounted) return;
       setState(() => _loading = false);
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Error al cargar archivos: $e')),
+        SnackBar(content: Text('Error al cargar paquetes: $e')),
       );
     }
   }
@@ -325,129 +405,47 @@ class _BibliotecaLegalScreenState extends State<BibliotecaLegalScreen> {
     }
   }
 
-  bool _isPurchased(Reference ref) {
-    final productId = _productIdForRef(ref);
+  bool _isPurchasedBundle(DocBundle b) {
+    final productId = _productIdForBundle(b);
     return _purchasedProductIds.contains(productId);
   }
 
   // ─────────────────────────────
-  // Preview / download / buy
+  // Download & open (por storagePath)
   // ─────────────────────────────
-  Future<void> _openPreview(Reference ref) async {
-    final purchased = _isPurchased(ref);
-
-    // ✅ Solo PDFs van al preview renderizado
-    if (_isPdf(ref)) {
-      final docKey = _docKeyFromFilename(ref.name);
-
-      final bool? wantsBuy = await Navigator.of(context).push<bool>(
-        MaterialPageRoute(
-          builder: (_) => DocumentPreviewScreen(
-            docKey: docKey,
-            title: ref.name,
-            storage: _storage,
-            isPurchased: purchased,
-            maxPreviewPages: 1, // ajusta a 1 o 2 según quieras
-          ),
-        ),
-      );
-
-      if (wantsBuy == true && !purchased) {
-        await _buy(ref);
-      }
-      return;
-    }
-
-    // ✅ Para otros tipos: evitamos crash y mostramos CTA limpia
-    final bool? action = await showDialog<bool>(
-      context: context,
-      builder: (_) => AlertDialog(
-        backgroundColor: _CapColors.surface,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
-        title: Text(
-          ref.name,
-          style: const TextStyle(
-            color: _CapColors.text,
-            fontWeight: FontWeight.w900,
-          ),
-        ),
-        content: Text(
-          purchased
-              ? 'Este tipo de archivo no tiene vista previa dentro de la app.\nPuedes abrirlo completo.'
-              : 'Este tipo de archivo no tiene vista previa dentro de la app.\nPara consultarlo completo y editarlo, realiza la compra.',
-          style: const TextStyle(color: _CapColors.textMuted, height: 1.25),
-        ),
-        actions: [
-          OutlinedButton(
-            onPressed: () => Navigator.pop(context, false),
-            style: OutlinedButton.styleFrom(
-              side: const BorderSide(color: Colors.white24),
-              foregroundColor: _CapColors.text,
-            ),
-            child: const Text('Cerrar'),
-          ),
-          ElevatedButton.icon(
-            onPressed: () => Navigator.pop(context, true),
-            style: ElevatedButton.styleFrom(
-              backgroundColor: _CapColors.gold,
-              foregroundColor: Colors.black,
-            ),
-            icon: Icon(purchased ? Icons.open_in_new : Icons.shopping_cart),
-            label: Text(
-              purchased ? 'Abrir archivo' : 'Comprar',
-              style: const TextStyle(fontWeight: FontWeight.w900),
-            ),
-          ),
-        ],
-      ),
-    );
-
-    if (action == true) {
-      if (purchased) {
-        await _downloadAndOpenFile(ref);
-      } else {
-        await _buy(ref);
-      }
-    }
-  }
-
-  Future<void> _downloadAndOpenFile(Reference ref) async {
-    if (!_isPurchased(ref)) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Debes comprar este documento para descargarlo'),
-        ),
-      );
-      return;
-    }
-
+  Future<void> _downloadAndOpenStoragePath(String storagePath) async {
     try {
+      final ref = _storage.ref(storagePath);
       final dir = await getApplicationDocumentsDirectory();
-      final file = File('${dir.path}/${ref.name}');
-      if (!await file.exists()) await ref.writeToFile(file);
+      final name = ref.name.isNotEmpty ? ref.name : storagePath.split('/').last;
+      final file = File('${dir.path}/$name');
+
+      if (!await file.exists()) {
+        await ref.writeToFile(file);
+      }
       await OpenFilex.open(file.path);
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context)
-          .showSnackBar(SnackBar(content: Text('Error: $e')));
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Error al abrir archivo: $e')),
+      );
     }
   }
 
-  Future<void> _buy(Reference ref) async {
-    final productId = _productIdForRef(ref);
+  Future<void> _buyBundle(DocBundle b) async {
+    final productId = _productIdForBundle(b);
 
     if (!_iap.isAvailable) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
-          content: Text('Compras no disponibles en este dispositivo'),
-        ),
+            content: Text('Compras no disponibles en este dispositivo')),
       );
       return;
     }
 
     if (_purchasedProductIds.contains(productId)) {
-      await _downloadAndOpenFile(ref);
+      // ya comprado
+      await _openBundle(b);
       return;
     }
 
@@ -464,25 +462,237 @@ class _BibliotecaLegalScreenState extends State<BibliotecaLegalScreen> {
   }
 
   // ─────────────────────────────
+  // Bundle UI actions
+  // ─────────────────────────────
+  Future<void> _openBundle(DocBundle b) async {
+    final purchased = _isPurchasedBundle(b);
+
+    await showModalBottomSheet(
+      context: context,
+      backgroundColor: _CapColors.surface,
+      isScrollControlled: true,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(18)),
+      ),
+      builder: (_) {
+        final productId = _productIdForBundle(b);
+        final busy = _purchaseInProgress.contains(productId);
+        final priceLabel = _iap.products[productId]?.price;
+        final buyLabel = priceLabel == null ? 'Comprar' : 'Comprar $priceLabel';
+
+        return SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(16, 14, 16, 16),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Container(
+                  width: 48,
+                  height: 4,
+                  decoration: BoxDecoration(
+                    color: Colors.white24,
+                    borderRadius: BorderRadius.circular(2),
+                  ),
+                ),
+                const SizedBox(height: 12),
+                Align(
+                  alignment: Alignment.centerLeft,
+                  child: Text(
+                    b.title,
+                    style: const TextStyle(
+                      color: _CapColors.text,
+                      fontWeight: FontWeight.w900,
+                      fontSize: 18,
+                    ),
+                  ),
+                ),
+                if (b.description.trim().isNotEmpty) ...[
+                  const SizedBox(height: 6),
+                  Align(
+                    alignment: Alignment.centerLeft,
+                    child: Text(
+                      b.description,
+                      style: const TextStyle(
+                          color: _CapColors.textMuted, height: 1.25),
+                    ),
+                  ),
+                ],
+                const SizedBox(height: 14),
+
+                // Lista de archivos del bundle
+                if (b.files.isEmpty)
+                  const Padding(
+                    padding: EdgeInsets.symmetric(vertical: 16),
+                    child: Text(
+                      'Este paquete no tiene archivos configurados en Firestore (files[]).',
+                      style: TextStyle(color: _CapColors.textMuted),
+                    ),
+                  )
+                else
+                  Flexible(
+                    child: ListView.separated(
+                      shrinkWrap: true,
+                      itemCount: b.files.length,
+                      separatorBuilder: (_, __) =>
+                          const Divider(color: Colors.white12),
+                      itemBuilder: (ctx, i) {
+                        final f = b.files[i];
+                        return ListTile(
+                          contentPadding: EdgeInsets.zero,
+                          leading:
+                              Icon(_iconForFile(f), color: _CapColors.gold),
+                          title: Text(
+                            f.name,
+                            style: const TextStyle(
+                                color: _CapColors.text,
+                                fontWeight: FontWeight.w800),
+                          ),
+                          subtitle: Text(
+                            f.storagePath,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(color: _CapColors.textMuted),
+                          ),
+                          trailing: ElevatedButton(
+                            onPressed: purchased
+                                ? () =>
+                                    _downloadAndOpenStoragePath(f.storagePath)
+                                : null,
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor:
+                                  purchased ? _CapColors.gold : Colors.white12,
+                              foregroundColor: purchased
+                                  ? Colors.black
+                                  : _CapColors.textMuted,
+                            ),
+                            child: Text(purchased ? 'Abrir' : 'Bloqueado'),
+                          ),
+                        );
+                      },
+                    ),
+                  ),
+
+                const SizedBox(height: 14),
+                Row(
+                  children: [
+                    Expanded(
+                      child: OutlinedButton(
+                        onPressed: () => Navigator.pop(context),
+                        style: OutlinedButton.styleFrom(
+                          side: const BorderSide(color: Colors.white24),
+                          foregroundColor: _CapColors.text,
+                          padding: const EdgeInsets.symmetric(vertical: 14),
+                          shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(14)),
+                        ),
+                        child: const Text('Cerrar'),
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: ElevatedButton(
+                        onPressed: busy
+                            ? null
+                            : purchased
+                                ? () {
+                                    // ya comprado, no hacemos nada extra
+                                    Navigator.pop(context);
+                                  }
+                                : () async {
+                                    Navigator.pop(context);
+                                    await _buyBundle(b);
+                                  },
+                        style: ElevatedButton.styleFrom(
+                          padding: const EdgeInsets.symmetric(vertical: 14),
+                          shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(14)),
+                          backgroundColor: _CapColors.gold,
+                          foregroundColor: Colors.black,
+                        ),
+                        child: busy
+                            ? const SizedBox(
+                                width: 18,
+                                height: 18,
+                                child:
+                                    CircularProgressIndicator(strokeWidth: 2),
+                              )
+                            : Text(
+                                purchased ? 'Comprado ✅' : buyLabel,
+                                style: const TextStyle(
+                                    fontWeight: FontWeight.w900),
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                      ),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  // ─────────────────────────────
   // Filters / favorites
   // ─────────────────────────────
-  List<Reference> _applyFilters() {
-    return _files.where((f) {
-      final name = f.name.toLowerCase();
+  List<DocBundle> _applyFilters() {
+    return _bundles.where((b) {
+      final hay = ('${b.title} ${b.description}').toLowerCase();
 
       if (_search.isNotEmpty) {
-        return name.contains(_search.toLowerCase());
+        return hay.contains(_search.toLowerCase());
       }
 
       if (_activeCategories.isNotEmpty) {
         for (final cat in _activeCategories) {
-          if (name.contains(cat.toLowerCase())) return true;
+          if (hay.contains(cat.toLowerCase())) return true;
         }
         return false;
       }
 
       return true;
     }).toList();
+  }
+
+  Future<bool> _isFavoriteForCurrentUser(String itemKey) async {
+    final uid = _auth.currentUser?.uid;
+    if (uid == null) return false;
+    return FavoritesManager.isFavorite(uid, itemKey);
+  }
+
+  Future<void> _toggleFavoriteForCurrentUser(String itemKey) async {
+    final uid = _auth.currentUser?.uid;
+    if (uid == null) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Inicia sesión para usar favoritos')),
+      );
+      return;
+    }
+    await FavoritesManager.toggleFavorite(uid, itemKey);
+    if (mounted) setState(() {});
+  }
+
+  Color _favColor(bool fav) => fav ? _CapColors.gold : _CapColors.goldDark;
+  IconData _favIcon(bool fav) =>
+      fav ? Icons.star_rounded : Icons.star_border_rounded;
+
+  Widget _favButtonForBundle(DocBundle b) {
+    final key = _bundleFavKey(b);
+
+    return FutureBuilder<bool>(
+      future: _isFavoriteForCurrentUser(key),
+      builder: (_, snap) {
+        final fav = snap.data ?? false;
+        return IconButton(
+          tooltip: fav ? 'Quitar de favoritos' : 'Agregar a favoritos',
+          onPressed: () => _toggleFavoriteForCurrentUser(key),
+          icon: Icon(_favIcon(fav), color: _favColor(fav)),
+        );
+      },
+    );
   }
 
   void _openFiltersSheet() {
@@ -626,44 +836,6 @@ class _BibliotecaLegalScreenState extends State<BibliotecaLegalScreen> {
     );
   }
 
-  Future<bool> _isFavoriteForCurrentUser(String itemKey) async {
-    final uid = _auth.currentUser?.uid;
-    if (uid == null) return false;
-    return FavoritesManager.isFavorite(uid, itemKey);
-  }
-
-  Future<void> _toggleFavoriteForCurrentUser(String itemKey) async {
-    final uid = _auth.currentUser?.uid;
-    if (uid == null) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Inicia sesión para usar favoritos')),
-      );
-      return;
-    }
-    await FavoritesManager.toggleFavorite(uid, itemKey);
-    if (mounted) setState(() {});
-  }
-
-  Color _favColor(bool fav) => fav ? _CapColors.gold : _CapColors.goldDark;
-
-  IconData _favIcon(bool fav) =>
-      fav ? Icons.star_rounded : Icons.star_border_rounded;
-
-  Widget _favButton(Reference ref) {
-    return FutureBuilder<bool>(
-      future: _isFavoriteForCurrentUser(ref.name),
-      builder: (_, snap) {
-        final fav = snap.data ?? false;
-        return IconButton(
-          tooltip: fav ? 'Quitar de favoritos' : 'Agregar a favoritos',
-          onPressed: () => _toggleFavoriteForCurrentUser(ref.name),
-          icon: Icon(_favIcon(fav), color: _favColor(fav)),
-        );
-      },
-    );
-  }
-
   Future<void> _handleBack() async {
     final navigator = Navigator.of(context);
     final didPop = await navigator.maybePop();
@@ -711,7 +883,7 @@ class _BibliotecaLegalScreenState extends State<BibliotecaLegalScreen> {
       child: Align(
         alignment: Alignment.centerLeft,
         child: Text(
-          'ARCHIVOS',
+          'PAQUETES',
           style: Theme.of(context).textTheme.headlineSmall?.copyWith(
                 color: _CapColors.text,
                 fontWeight: FontWeight.w900,
@@ -778,7 +950,7 @@ class _BibliotecaLegalScreenState extends State<BibliotecaLegalScreen> {
                       decoration: const InputDecoration(
                         isDense: true,
                         border: InputBorder.none,
-                        hintText: 'Buscar documentos...',
+                        hintText: 'Buscar paquetes...',
                         hintStyle: TextStyle(color: _CapColors.textMuted),
                       ),
                     ),
@@ -836,21 +1008,19 @@ class _BibliotecaLegalScreenState extends State<BibliotecaLegalScreen> {
     );
   }
 
-  Widget _docActionsRow(Reference ref) {
-    final productId = _productIdForRef(ref);
+  Widget _bundleActionsRow(DocBundle b) {
+    final productId = _productIdForBundle(b);
     final purchased = _purchasedProductIds.contains(productId);
     final busy = _purchaseInProgress.contains(productId);
 
-    final price = _iap.products[productId]?.price; // ej "$19.00"
+    final price = _iap.products[productId]?.price;
     final buyLabel = price == null ? 'Comprar' : 'Comprar $price';
-
-    final previewLabel = _isPdf(ref) ? 'Vista previa (1 pág.)' : 'Vista previa';
 
     return Row(
       children: [
         Expanded(
           child: OutlinedButton(
-            onPressed: () => _openPreview(ref),
+            onPressed: () => _openBundle(b),
             style: OutlinedButton.styleFrom(
               side: const BorderSide(color: Colors.white24),
               foregroundColor: _CapColors.text,
@@ -859,7 +1029,7 @@ class _BibliotecaLegalScreenState extends State<BibliotecaLegalScreen> {
                 borderRadius: BorderRadius.circular(12),
               ),
             ),
-            child: Text(previewLabel),
+            child: const Text('Ver paquete'),
           ),
         ),
         const SizedBox(width: 10),
@@ -868,8 +1038,8 @@ class _BibliotecaLegalScreenState extends State<BibliotecaLegalScreen> {
             onPressed: busy
                 ? null
                 : purchased
-                    ? () => _downloadAndOpenFile(ref)
-                    : () => _buy(ref),
+                    ? () => _openBundle(b)
+                    : () => _buyBundle(b),
             style: ElevatedButton.styleFrom(
               backgroundColor: _CapColors.gold,
               foregroundColor: Colors.black,
@@ -885,7 +1055,7 @@ class _BibliotecaLegalScreenState extends State<BibliotecaLegalScreen> {
                     child: CircularProgressIndicator(strokeWidth: 2),
                   )
                 : Text(
-                    purchased ? 'Descargar' : buyLabel,
+                    purchased ? 'Comprado ✅' : buyLabel,
                     style: const TextStyle(fontWeight: FontWeight.w900),
                     overflow: TextOverflow.ellipsis,
                   ),
@@ -914,7 +1084,7 @@ class _BibliotecaLegalScreenState extends State<BibliotecaLegalScreen> {
         drawer: const CustomDrawer(),
         appBar: CapfiscalTopBar(
           onMenu: () => _scaffoldKey.currentState?.openDrawer(),
-          onRefresh: _fetchFiles,
+          onRefresh: _fetchBundles,
           onProfile: () => Navigator.of(context).pushNamed('/perfil'),
         ),
         body: Column(
@@ -933,7 +1103,7 @@ class _BibliotecaLegalScreenState extends State<BibliotecaLegalScreen> {
                   : filtered.isEmpty
                       ? const Center(
                           child: Text(
-                            'No se encontraron documentos',
+                            'No se encontraron paquetes',
                             style: TextStyle(color: _CapColors.textMuted),
                           ),
                         )
@@ -945,7 +1115,7 @@ class _BibliotecaLegalScreenState extends State<BibliotecaLegalScreen> {
                               separatorBuilder: (_, __) =>
                                   const SizedBox(height: 10),
                               itemBuilder: (ctx, i) {
-                                final ref = filtered[i];
+                                final b = filtered[i];
                                 return Container(
                                   padding: const EdgeInsets.all(12),
                                   decoration: BoxDecoration(
@@ -965,24 +1135,33 @@ class _BibliotecaLegalScreenState extends State<BibliotecaLegalScreen> {
                                             child: SizedBox(
                                               width: 52,
                                               height: 52,
-                                              child: _docThumb(ref),
+                                              child: _bundleThumb(b),
                                             ),
                                           ),
                                           const SizedBox(width: 10),
                                           Expanded(
                                             child: Text(
-                                              ref.name,
+                                              b.title,
                                               style: const TextStyle(
                                                 color: _CapColors.text,
                                                 fontWeight: FontWeight.w800,
                                               ),
                                             ),
                                           ),
-                                          _favButton(ref),
+                                          _favButtonForBundle(b),
                                         ],
                                       ),
+                                      const SizedBox(height: 8),
+                                      if (b.description.trim().isNotEmpty)
+                                        Text(
+                                          b.description,
+                                          maxLines: 2,
+                                          overflow: TextOverflow.ellipsis,
+                                          style: const TextStyle(
+                                              color: _CapColors.textMuted),
+                                        ),
                                       const SizedBox(height: 10),
-                                      _docActionsRow(ref),
+                                      _bundleActionsRow(b),
                                     ],
                                   ),
                                 );
@@ -996,11 +1175,11 @@ class _BibliotecaLegalScreenState extends State<BibliotecaLegalScreen> {
                                 crossAxisCount: 2,
                                 crossAxisSpacing: 14,
                                 mainAxisSpacing: 14,
-                                mainAxisExtent: 290,
+                                mainAxisExtent: 300,
                               ),
                               itemCount: filtered.length,
                               itemBuilder: (ctx, i) {
-                                final ref = filtered[i];
+                                final b = filtered[i];
                                 return Container(
                                   padding: const EdgeInsets.all(12),
                                   decoration: BoxDecoration(
@@ -1017,7 +1196,7 @@ class _BibliotecaLegalScreenState extends State<BibliotecaLegalScreen> {
                                           children: [
                                             Positioned.fill(
                                               child: InkWell(
-                                                onTap: () => _openPreview(ref),
+                                                onTap: () => _openBundle(b),
                                                 borderRadius:
                                                     BorderRadius.circular(14),
                                                 child: Container(
@@ -1030,7 +1209,7 @@ class _BibliotecaLegalScreenState extends State<BibliotecaLegalScreen> {
                                                     border: Border.all(
                                                         color: Colors.white10),
                                                   ),
-                                                  child: _docThumb(ref),
+                                                  child: _bundleThumb(b),
                                                 ),
                                               ),
                                             ),
@@ -1046,7 +1225,7 @@ class _BibliotecaLegalScreenState extends State<BibliotecaLegalScreen> {
                                                   border: Border.all(
                                                       color: Colors.white12),
                                                 ),
-                                                child: _favButton(ref),
+                                                child: _favButtonForBundle(b),
                                               ),
                                             ),
                                           ],
@@ -1054,7 +1233,7 @@ class _BibliotecaLegalScreenState extends State<BibliotecaLegalScreen> {
                                       ),
                                       const SizedBox(height: 10),
                                       Text(
-                                        ref.name,
+                                        b.title,
                                         maxLines: 2,
                                         overflow: TextOverflow.ellipsis,
                                         style: const TextStyle(
@@ -1062,8 +1241,14 @@ class _BibliotecaLegalScreenState extends State<BibliotecaLegalScreen> {
                                           fontWeight: FontWeight.w900,
                                         ),
                                       ),
+                                      const SizedBox(height: 6),
+                                      Text(
+                                        '${b.files.length} archivo(s)',
+                                        style: const TextStyle(
+                                            color: _CapColors.textMuted),
+                                      ),
                                       const SizedBox(height: 8),
-                                      _docActionsRow(ref),
+                                      _bundleActionsRow(b),
                                     ],
                                   ),
                                 );

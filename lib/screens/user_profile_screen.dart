@@ -24,6 +24,20 @@ import '../widgets/favorites/fav_card.dart';
 import '../widgets/favorites/video_tile.dart';
 import '../widgets/profile/profile_field.dart';
 
+class FavBundle {
+  final String docId;
+  final String title;
+  final String description;
+  final int filesCount;
+
+  FavBundle({
+    required this.docId,
+    required this.title,
+    required this.description,
+    required this.filesCount,
+  });
+}
+
 class UserProfileScreen extends StatefulWidget {
   const UserProfileScreen({
     super.key,
@@ -61,10 +75,23 @@ class _UserProfileScreenState extends State<UserProfileScreen>
   bool _editing = false;
   bool _signingOut = false;
 
-  // Favoritos
+  Future<List<Reference>> _listAllRecursive(Reference root) async {
+    final out = <Reference>[];
+    final res = await root.listAll();
+
+    out.addAll(res.items);
+
+    for (final sub in res.prefixes) {
+      out.addAll(await _listAllRecursive(sub));
+    }
+    return out;
+  }
+
+// Favoritos
   bool _loadingFavs = true;
   List<Reference> _favDocs = [];
   List<FavVideo> _favVideos = [];
+  List<FavBundle> _favBundles = []; // ✅ NUEVO
 
   // Foto perfil
   String? _photoUrlRaw; // RAW guardado (sin cache-bust)
@@ -480,21 +507,68 @@ class _UserProfileScreenState extends State<UserProfileScreen>
       }
 
       final raw = await FavoritesManager.getFavorites(uid);
-      final List<String> favNames = raw
-          .map((e) => e.toString())
-          .where((e) => e.trim().isNotEmpty)
+      final favSet = raw
+          .map((e) => e.toString().trim())
+          .where((e) => e.isNotEmpty)
+          .toSet();
+
+      // -----------------------------
+      // 1) ✅ BUNDLES favoritos (Firestore: documents/{docId})
+      // Claves esperadas: "bundle:<docId>"
+      // -----------------------------
+      final bundleIds = favSet
+          .where((k) => k.startsWith('bundle:'))
+          .map((k) => k.substring('bundle:'.length).trim())
+          .where((id) => id.isNotEmpty)
           .toList();
 
-      final favSet = favNames.map((e) => e.trim()).toSet();
+      final List<FavBundle> bundles = [];
 
-      // ✅ DOCS: listar desde docs/ (NO filtrar por PDF; ahora soporta DOC/DOCX/etc)
-      final docsResult = await _storage.ref(_docsFolder).listAll();
-      final docs = docsResult.items
-          .where((ref) => _isFavDocRef(favSet, ref))
-          .toList()
+      // Firestore whereIn admite max 10 ids por query
+      const chunkSize = 10;
+      for (var i = 0; i < bundleIds.length; i += chunkSize) {
+        final chunk = bundleIds.sublist(
+          i,
+          (i + chunkSize > bundleIds.length) ? bundleIds.length : i + chunkSize,
+        );
+
+        final snap = await _db
+            .collection('documents')
+            .where(FieldPath.documentId, whereIn: chunk)
+            .get();
+
+        for (final d in snap.docs) {
+          final data = d.data();
+          final title = (data['title'] ?? d.id).toString().trim();
+          final desc = (data['description'] ?? '').toString().trim();
+          final files =
+              (data['files'] is List) ? (data['files'] as List) : const [];
+          bundles.add(
+            FavBundle(
+              docId: d.id,
+              title: title.isEmpty ? d.id : title,
+              description: desc,
+              filesCount: files.length,
+            ),
+          );
+        }
+      }
+
+      bundles.sort(
+          (a, b) => a.title.toLowerCase().compareTo(b.title.toLowerCase()));
+
+      // -----------------------------
+      // 2) DOCS favoritos (Storage: docs/**) ✅ ahora recursivo
+      // Soporta DOCX/PDF/etc dentro de subcarpetas
+      // -----------------------------
+      final allDocRefs = await _listAllRecursive(_storage.ref(_docsFolder));
+
+      final docs = allDocRefs.where((ref) => _isFavDocRef(favSet, ref)).toList()
         ..sort((a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()));
 
-      // VIDEOS: tu lógica original + prefijo "video:"
+      // -----------------------------
+      // 3) VIDEOS favoritos (tu lógica actual)
+      // -----------------------------
       final vSnap = await _db.collection('videos').get();
       final List<FavVideo> vids = [];
       for (final d in vSnap.docs) {
@@ -524,6 +598,7 @@ class _UserProfileScreenState extends State<UserProfileScreen>
 
       if (!mounted) return;
       setState(() {
+        _favBundles = bundles; // ✅ NUEVO
         _favDocs = docs;
         _favVideos = vids;
         _loadingFavs = false;
@@ -1259,6 +1334,101 @@ class _UserProfileScreenState extends State<UserProfileScreen>
                         ),
                       )
                     else ...[
+                      Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 12),
+                        child: FavCard(
+                          title: 'Paquetes',
+                          child: _favBundles.isEmpty
+                              ? const Padding(
+                                  padding: EdgeInsets.all(16.0),
+                                  child: Text(
+                                    'No tienes paquetes favoritos',
+                                    style:
+                                        TextStyle(color: CapColors.textMuted),
+                                  ),
+                                )
+                              : SizedBox(
+                                  height:
+                                      170, // ✅ más alto para evitar overflow
+                                  child: ListView.separated(
+                                    scrollDirection: Axis.horizontal,
+                                    physics: const BouncingScrollPhysics(),
+                                    padding:
+                                        const EdgeInsets.fromLTRB(8, 8, 8, 12),
+                                    itemCount: _favBundles.length,
+                                    separatorBuilder: (_, __) =>
+                                        const SizedBox(width: 10),
+                                    itemBuilder: (ctx, i) {
+                                      final b = _favBundles[i];
+
+                                      return SizedBox(
+                                        width: 190,
+                                        child: InkWell(
+                                          onTap: () {
+                                            Navigator.of(context).pushNamed(
+                                              '/biblioteca',
+                                              arguments: {'query': b.title},
+                                            );
+                                          },
+                                          borderRadius:
+                                              BorderRadius.circular(14),
+                                          child: Container(
+                                            padding: const EdgeInsets.all(
+                                                10), // ✅ menos padding
+                                            decoration: BoxDecoration(
+                                              color: CapColors.surfaceAlt,
+                                              borderRadius:
+                                                  BorderRadius.circular(14),
+                                              border: Border.all(
+                                                  color: Colors.white12),
+                                            ),
+                                            child: Column(
+                                              crossAxisAlignment:
+                                                  CrossAxisAlignment.start,
+                                              children: [
+                                                const Icon(
+                                                  Icons.folder_zip_rounded,
+                                                  color: CapColors.gold,
+                                                  size: 24, // ✅ icon más chico
+                                                ),
+                                                const SizedBox(height: 6),
+
+                                                // ✅ CLAVE: esto hace que el layout “encaje” siempre
+                                                Expanded(
+                                                  child: Text(
+                                                    b.title,
+                                                    maxLines: 2,
+                                                    overflow:
+                                                        TextOverflow.ellipsis,
+                                                    style: const TextStyle(
+                                                      color: CapColors.text,
+                                                      fontWeight:
+                                                          FontWeight.w900,
+                                                    ),
+                                                  ),
+                                                ),
+
+                                                const SizedBox(height: 4),
+                                                Text(
+                                                  '${b.filesCount} archivo(s)',
+                                                  maxLines: 1,
+                                                  overflow:
+                                                      TextOverflow.ellipsis,
+                                                  style: const TextStyle(
+                                                    color: CapColors.textMuted,
+                                                    fontWeight: FontWeight.w700,
+                                                  ),
+                                                ),
+                                              ],
+                                            ),
+                                          ),
+                                        ),
+                                      );
+                                    },
+                                  ),
+                                ),
+                        ),
+                      ),
                       Padding(
                         padding: const EdgeInsets.symmetric(horizontal: 12),
                         child: FavCard(
