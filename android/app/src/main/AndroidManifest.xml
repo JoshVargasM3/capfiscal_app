@@ -3,6 +3,8 @@
 
     <!-- Internet para Stripe / Firebase -->
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- Requerido para compras in-app con Google Play Billing -->
+    <uses-permission android:name="com.android.vending.BILLING" />
 
     <application
         android:name="${applicationName}"

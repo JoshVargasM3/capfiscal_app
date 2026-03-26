@@ -280,3 +280,45 @@ exports.resumeSubscriptionCancellation = onCall({
     message: "Restauramos la suscripción para próximos cobros.",
   };
 });
+
+/**
+ * Registra una compra de documento en Firestore.
+ * Requiere Auth + App Check para evitar escrituras directas desde clientes no válidos.
+ */
+exports.registerDocumentPurchase = onCall({
+  region: "us-central1",
+  enforceAppCheck: true,
+}, async (request) => {
+  const uid = request.auth?.uid;
+  if (!uid) {
+    throw new HttpsError("unauthenticated", "Inicia sesión para continuar.");
+  }
+
+  const productId = String(request.data?.productId || "").trim();
+  if (!/^capfiscal_doc_[a-z0-9_]+$/.test(productId)) {
+    throw new HttpsError("invalid-argument", "productId inválido.");
+  }
+
+  const status = String(request.data?.status || "purchased").trim();
+  const purchaseId = request.data?.purchaseId || null;
+  const transactionDate = request.data?.transactionDate || null;
+  const source = request.data?.source || null;
+  const verificationData = request.data?.verificationData || null;
+
+  await admin.firestore()
+      .collection("users")
+      .doc(uid)
+      .collection("doc_purchases")
+      .doc(productId)
+      .set({
+        productId,
+        status,
+        purchaseID: purchaseId,
+        transactionDate,
+        source,
+        verificationData,
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      }, {merge: true});
+
+  return {ok: true, productId, status};
+});
