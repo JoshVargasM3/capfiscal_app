@@ -9,7 +9,7 @@
 	<key>PLIST_VERSION</key>
 	<string>1</string>
 	<key>BUNDLE_ID</key>
-	<string>com.example.capfiscalApp</string>
+	<string>com.capfiscal.biblioteca</string>
 	<key>PROJECT_ID</key>
 	<string>capfiscal-biblioteca-app</string>
 	<key>STORAGE_BUCKET</key>
@@ -25,6 +25,6 @@
 	<key>IS_SIGNIN_ENABLED</key>
 	<true></true>
 	<key>GOOGLE_APP_ID</key>
-	<string>1:518204584684:ios:ced6d59c16832323396bc9</string>
+	<string>1:518204584684:ios:c674bab4c5af014f396bc9</string>
 </dict>
 </plist>
