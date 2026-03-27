@@ -36,71 +36,74 @@ class CapfiscalBottomNav extends StatelessWidget {
   Widget build(BuildContext context) {
     // tono dorado más oscuro para degradado
     const goldDark = Color(0xFFB88F30);
+    final hasBottomInset = MediaQuery.of(context).padding.bottom > 0;
 
-    return SafeArea(
-      top: false,
-      child: Container(
-        padding: const EdgeInsets.fromLTRB(14, 8, 14, 10),
-        decoration: BoxDecoration(
-          color: background,
-          border: const Border(
-            top: BorderSide(color: Color(0x33E1B85C)), // dorado translúcido
-          ),
+    return Container(
+      decoration: BoxDecoration(
+        color: background,
+        border: const Border(
+          top: BorderSide(color: Color(0x33E1B85C)), // dorado translúcido
         ),
-        child: Row(
-          mainAxisAlignment: MainAxisAlignment.spaceBetween,
-          children: [
-            _Item(
-              icon: Icons.menu_book_rounded, // Biblioteca
-              index: 0,
-              currentIndex: currentIndex,
-              onPressed: (i) =>
-                  onTap != null ? onTap!(i) : _defaultNavigate(context, i),
-              activeColor: activeColor,
-              inactiveColor: inactiveColor,
-              activeColorDark: goldDark,
-            ),
-            _Item(
-              icon: Icons.ondemand_video_rounded, // Videos
-              index: 1,
-              currentIndex: currentIndex,
-              onPressed: (i) =>
-                  onTap != null ? onTap!(i) : _defaultNavigate(context, i),
-              activeColor: activeColor,
-              inactiveColor: inactiveColor,
-              activeColorDark: goldDark,
-            ),
-            _Item(
-              icon: Icons.home_rounded, // Home
-              index: 2,
-              currentIndex: currentIndex,
-              onPressed: (i) =>
-                  onTap != null ? onTap!(i) : _defaultNavigate(context, i),
-              activeColor: activeColor,
-              inactiveColor: inactiveColor,
-              activeColorDark: goldDark,
-            ),
-            _Item(
-              icon: Icons.chat_bubble_rounded, // Chat
-              index: 3,
-              currentIndex: currentIndex,
-              onPressed: (i) =>
-                  onTap != null ? onTap!(i) : _defaultNavigate(context, i),
-              activeColor: activeColor,
-              inactiveColor: inactiveColor,
-              activeColorDark: goldDark,
-            ),
-            _Item(
-              icon: Icons.person_rounded, // Perfil
-              index: 4,
-              currentIndex: currentIndex,
-              onPressed: (i) =>
-                  onTap != null ? onTap!(i) : _defaultNavigate(context, i),
-              activeColor: activeColor,
-              inactiveColor: inactiveColor,
-              activeColorDark: goldDark,
-            ),
-          ],
+      ),
+      child: SafeArea(
+        top: false,
+        child: Padding(
+          padding: EdgeInsets.fromLTRB(14, 8, 14, hasBottomInset ? 0 : 10),
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              _Item(
+                icon: Icons.menu_book_rounded, // Biblioteca
+                index: 0,
+                currentIndex: currentIndex,
+                onPressed: (i) =>
+                    onTap != null ? onTap!(i) : _defaultNavigate(context, i),
+                activeColor: activeColor,
+                inactiveColor: inactiveColor,
+                activeColorDark: goldDark,
+              ),
+              _Item(
+                icon: Icons.ondemand_video_rounded, // Videos
+                index: 1,
+                currentIndex: currentIndex,
+                onPressed: (i) =>
+                    onTap != null ? onTap!(i) : _defaultNavigate(context, i),
+                activeColor: activeColor,
+                inactiveColor: inactiveColor,
+                activeColorDark: goldDark,
+              ),
+              _Item(
+                icon: Icons.home_rounded, // Home
+                index: 2,
+                currentIndex: currentIndex,
+                onPressed: (i) =>
+                    onTap != null ? onTap!(i) : _defaultNavigate(context, i),
+                activeColor: activeColor,
+                inactiveColor: inactiveColor,
+                activeColorDark: goldDark,
+              ),
+              _Item(
+                icon: Icons.chat_bubble_rounded, // Chat
+                index: 3,
+                currentIndex: currentIndex,
+                onPressed: (i) =>
+                    onTap != null ? onTap!(i) : _defaultNavigate(context, i),
+                activeColor: activeColor,
+                inactiveColor: inactiveColor,
+                activeColorDark: goldDark,
+              ),
+              _Item(
+                icon: Icons.person_rounded, // Perfil
+                index: 4,
+                currentIndex: currentIndex,
+                onPressed: (i) =>
+                    onTap != null ? onTap!(i) : _defaultNavigate(context, i),
+                activeColor: activeColor,
+                inactiveColor: inactiveColor,
+                activeColorDark: goldDark,
+              ),
+            ],
+          ),
         ),
       ),
     );

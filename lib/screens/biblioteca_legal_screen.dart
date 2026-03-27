@@ -27,6 +27,8 @@ class _CapColors {
   static const Color textMuted = Color(0xFFBEBEC6);
   static const Color gold = Color(0xFFE1B85C);
   static const Color goldDark = Color(0xFFB88F30);
+  static const Color success = Color(0xFF1F8B4C);
+  static const Color successDark = Color(0xFF16653A);
 }
 
 /// Modelo: archivo dentro de un bundle
@@ -222,6 +224,7 @@ class _BibliotecaLegalScreenState extends State<BibliotecaLegalScreen> {
   // ─────────────────────────────
   String _productIdForBundle(DocBundle b) => 'capfiscal_bundle_${b.id}';
   String _bundleFavKey(DocBundle b) => 'bundle:${b.id}';
+  String _docFavKey(BundleFile f) => 'doc:${f.storagePath}';
 
   String _extFromName(String name) {
     final n = name.toLowerCase().trim();
@@ -475,17 +478,20 @@ class _BibliotecaLegalScreenState extends State<BibliotecaLegalScreen> {
         borderRadius: BorderRadius.vertical(top: Radius.circular(18)),
       ),
       builder: (_) {
-        final productId = _productIdForBundle(b);
-        final busy = _purchaseInProgress.contains(productId);
-        final priceLabel = _iap.products[productId]?.price;
-        final buyLabel = priceLabel == null ? 'Comprar' : 'Comprar $priceLabel';
+        return StatefulBuilder(
+          builder: (context, setSheetState) {
+            final productId = _productIdForBundle(b);
+            final busy = _purchaseInProgress.contains(productId);
+            final priceLabel = _iap.products[productId]?.price;
+            final buyLabel =
+                priceLabel == null ? 'Comprar' : 'Comprar $priceLabel';
 
-        return SafeArea(
-          child: Padding(
-            padding: const EdgeInsets.fromLTRB(16, 14, 16, 16),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
+            return SafeArea(
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(16, 14, 16, 16),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
                 Container(
                   width: 48,
                   height: 4,
@@ -553,19 +559,56 @@ class _BibliotecaLegalScreenState extends State<BibliotecaLegalScreen> {
                             overflow: TextOverflow.ellipsis,
                             style: const TextStyle(color: _CapColors.textMuted),
                           ),
-                          trailing: ElevatedButton(
-                            onPressed: purchased
-                                ? () =>
-                                    _downloadAndOpenStoragePath(f.storagePath)
-                                : null,
-                            style: ElevatedButton.styleFrom(
-                              backgroundColor:
-                                  purchased ? _CapColors.gold : Colors.white12,
-                              foregroundColor: purchased
-                                  ? Colors.black
-                                  : _CapColors.textMuted,
-                            ),
-                            child: Text(purchased ? 'Abrir' : 'Bloqueado'),
+                          trailing: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              FutureBuilder<bool>(
+                                future: _isFavoriteForCurrentUser(
+                                  _docFavKey(f),
+                                ),
+                                builder: (context, snap) {
+                                  final fav = snap.data ?? false;
+                                  return IconButton(
+                                    tooltip: fav
+                                        ? 'Quitar de favoritos'
+                                        : 'Agregar a favoritos',
+                                    onPressed: () async {
+                                      await _toggleFavoriteForCurrentUser(
+                                        _docFavKey(f),
+                                      );
+                                      if (mounted) {
+                                        setState(() {});
+                                        setSheetState(() {});
+                                      }
+                                    },
+                                    icon: Icon(
+                                      fav
+                                          ? Icons.star_rounded
+                                          : Icons.star_border_rounded,
+                                      color: fav
+                                          ? _CapColors.gold
+                                          : _CapColors.textMuted,
+                                    ),
+                                  );
+                                },
+                              ),
+                              ElevatedButton(
+                                onPressed: purchased
+                                    ? () => _downloadAndOpenStoragePath(
+                                          f.storagePath,
+                                        )
+                                    : null,
+                                style: ElevatedButton.styleFrom(
+                                  backgroundColor: purchased
+                                      ? _CapColors.gold
+                                      : Colors.white12,
+                                  foregroundColor: purchased
+                                      ? Colors.black
+                                      : _CapColors.textMuted,
+                                ),
+                                child: Text(purchased ? 'Abrir' : 'Bloqueado'),
+                              ),
+                            ],
                           ),
                         );
                       },
@@ -606,8 +649,10 @@ class _BibliotecaLegalScreenState extends State<BibliotecaLegalScreen> {
                           padding: const EdgeInsets.symmetric(vertical: 14),
                           shape: RoundedRectangleBorder(
                               borderRadius: BorderRadius.circular(14)),
-                          backgroundColor: _CapColors.gold,
-                          foregroundColor: Colors.black,
+                          backgroundColor:
+                              purchased ? _CapColors.success : _CapColors.gold,
+                          foregroundColor:
+                              purchased ? Colors.white : Colors.black,
                         ),
                         child: busy
                             ? const SizedBox(
@@ -617,7 +662,7 @@ class _BibliotecaLegalScreenState extends State<BibliotecaLegalScreen> {
                                     CircularProgressIndicator(strokeWidth: 2),
                               )
                             : Text(
-                                purchased ? 'Comprado ✅' : buyLabel,
+                                purchased ? 'Comprado' : buyLabel,
                                 style: const TextStyle(
                                     fontWeight: FontWeight.w900),
                                 overflow: TextOverflow.ellipsis,
@@ -626,9 +671,11 @@ class _BibliotecaLegalScreenState extends State<BibliotecaLegalScreen> {
                     ),
                   ],
                 ),
-              ],
-            ),
-          ),
+                  ],
+                ),
+              ),
+            );
+          },
         );
       },
     );
@@ -1041,8 +1088,9 @@ class _BibliotecaLegalScreenState extends State<BibliotecaLegalScreen> {
                     ? () => _openBundle(b)
                     : () => _buyBundle(b),
             style: ElevatedButton.styleFrom(
-              backgroundColor: _CapColors.gold,
-              foregroundColor: Colors.black,
+              backgroundColor:
+                  purchased ? _CapColors.success : _CapColors.gold,
+              foregroundColor: purchased ? Colors.white : Colors.black,
               padding: const EdgeInsets.symmetric(vertical: 12),
               shape: RoundedRectangleBorder(
                 borderRadius: BorderRadius.circular(12),
@@ -1055,7 +1103,7 @@ class _BibliotecaLegalScreenState extends State<BibliotecaLegalScreen> {
                     child: CircularProgressIndicator(strokeWidth: 2),
                   )
                 : Text(
-                    purchased ? 'Comprado ✅' : buyLabel,
+                    purchased ? 'Comprado' : buyLabel,
                     style: const TextStyle(fontWeight: FontWeight.w900),
                     overflow: TextOverflow.ellipsis,
                   ),

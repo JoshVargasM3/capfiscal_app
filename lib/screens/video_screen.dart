@@ -149,12 +149,11 @@ class _VideoScreenState extends State<VideoScreen> {
   String _watchUrl(String id) => 'https://www.youtube.com/watch?v=$id';
   String _thumbUrl(String id) => 'https://img.youtube.com/vi/$id/hqdefault.jpg';
 
-  void _ensureWebViewController() {
-    if (_wv != null) return;
-
-    final controller = WebViewController()
+  WebViewController _buildWebViewController() {
+    return WebViewController()
       ..setJavaScriptMode(JavaScriptMode.unrestricted)
       ..setBackgroundColor(const Color(0xFF000000))
+      ..setMediaPlaybackRequiresUserGesture(false)
       ..setNavigationDelegate(
         NavigationDelegate(
           onPageStarted: (_) {
@@ -169,6 +168,7 @@ class _VideoScreenState extends State<VideoScreen> {
             setState(() => _playerLoading = false);
           },
           onWebResourceError: (err) {
+            if (!err.isForMainFrame) return;
             if (!mounted) return;
             setState(() {
               _playerLoading = false;
@@ -179,17 +179,16 @@ class _VideoScreenState extends State<VideoScreen> {
           },
         ),
       );
-
-    _wv = controller;
   }
 
   Future<void> _playActive() async {
     final v = _activeMeta;
     if (v == null) return;
 
-    _ensureWebViewController();
+    final controller = _buildWebViewController();
 
     setState(() {
+      _wv = controller;
       _playerError = null;
       _showPlayer = true;
       _playerLoading = true;
@@ -427,7 +426,12 @@ class _VideoScreenState extends State<VideoScreen> {
 
               // WebView encima si está activo
               if (_showPlayer && _wv != null)
-                Positioned.fill(child: WebViewWidget(controller: _wv!)),
+                Positioned.fill(
+                  child: WebViewWidget(
+                    key: ValueKey('yt_${meta.youtubeId}'),
+                    controller: _wv!,
+                  ),
+                ),
 
               // Overlay play si NO está el player
               if (!_showPlayer)
@@ -939,6 +943,7 @@ class _FullscreenYouTubePageState extends State<_FullscreenYouTubePage> {
     _controller = WebViewController()
       ..setJavaScriptMode(JavaScriptMode.unrestricted)
       ..setBackgroundColor(const Color(0xFF000000))
+      ..setMediaPlaybackRequiresUserGesture(false)
       ..setNavigationDelegate(
         NavigationDelegate(
           onPageStarted: (_) => setState(() {
@@ -946,10 +951,13 @@ class _FullscreenYouTubePageState extends State<_FullscreenYouTubePage> {
             _error = null;
           }),
           onPageFinished: (_) => setState(() => _loading = false),
-          onWebResourceError: (err) => setState(() {
-            _loading = false;
-            _error = 'Error (${err.errorCode}): ${err.description}';
-          }),
+          onWebResourceError: (err) {
+            if (!err.isForMainFrame) return;
+            setState(() {
+              _loading = false;
+              _error = 'Error (${err.errorCode}): ${err.description}';
+            });
+          },
         ),
       )
       ..loadRequest(Uri.parse(widget.embedUrl));
