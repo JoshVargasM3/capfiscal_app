@@ -60,6 +60,7 @@ class _VideoScreenState extends State<VideoScreen> {
   String? _activeVideoId;
   _VideoMeta? _activeMeta;
   String? _scheduledInitialId;
+  int _playerSession = 0;
 
   // ---- Firestore stream ----
   Stream<QuerySnapshot<Map<String, dynamic>>> _videosStream() {
@@ -149,15 +150,15 @@ class _VideoScreenState extends State<VideoScreen> {
   String _watchUrl(String id) => 'https://www.youtube.com/watch?v=$id';
   String _thumbUrl(String id) => 'https://img.youtube.com/vi/$id/hqdefault.jpg';
 
-  WebViewController _buildWebViewController() {
+  WebViewController _buildWebViewController(int sessionId) {
     return WebViewController()
       ..setJavaScriptMode(JavaScriptMode.unrestricted)
       ..setBackgroundColor(const Color(0xFF000000))
-      ..setMediaPlaybackRequiresUserGesture(false)
       ..setNavigationDelegate(
         NavigationDelegate(
           onPageStarted: (_) {
             if (!mounted) return;
+            if (sessionId != _playerSession) return;
             setState(() {
               _playerLoading = true;
               _playerError = null;
@@ -165,11 +166,13 @@ class _VideoScreenState extends State<VideoScreen> {
           },
           onPageFinished: (_) {
             if (!mounted) return;
+            if (sessionId != _playerSession) return;
             setState(() => _playerLoading = false);
           },
           onWebResourceError: (err) {
-            if (!err.isForMainFrame) return;
+            if (err.isForMainFrame != true) return;
             if (!mounted) return;
+            if (sessionId != _playerSession) return;
             setState(() {
               _playerLoading = false;
               _playerError =
@@ -185,7 +188,8 @@ class _VideoScreenState extends State<VideoScreen> {
     final v = _activeMeta;
     if (v == null) return;
 
-    final controller = _buildWebViewController();
+    final sessionId = ++_playerSession;
+    final controller = _buildWebViewController(sessionId);
 
     setState(() {
       _wv = controller;
@@ -195,9 +199,10 @@ class _VideoScreenState extends State<VideoScreen> {
     });
 
     try {
-      await _wv!.loadRequest(Uri.parse(_embedUrl(v.youtubeId, autoplay: true)));
+      await controller.loadRequest(Uri.parse(_embedUrl(v.youtubeId, autoplay: true)));
     } catch (e) {
       if (!mounted) return;
+      if (sessionId != _playerSession) return;
       setState(() {
         _playerLoading = false;
         _playerError = 'Error al iniciar el reproductor: $e';
@@ -208,6 +213,8 @@ class _VideoScreenState extends State<VideoScreen> {
 
   void _selectVideo(_VideoMeta v) {
     setState(() {
+      _playerSession++;
+      _wv = null;
       _activeMeta = v;
       _activeVideoId = v.youtubeId;
       _playerError = null;
@@ -383,7 +390,12 @@ class _VideoScreenState extends State<VideoScreen> {
     if (meta == null) return;
 
     // evita tener 2 players simultáneos en pantalla
-    setState(() => _showPlayer = false);
+    setState(() {
+      _playerSession++;
+      _wv = null;
+      _showPlayer = false;
+      _playerLoading = false;
+    });
 
     await Navigator.of(context).push(
       MaterialPageRoute(
@@ -428,7 +440,7 @@ class _VideoScreenState extends State<VideoScreen> {
               if (_showPlayer && _wv != null)
                 Positioned.fill(
                   child: WebViewWidget(
-                    key: ValueKey('yt_${meta.youtubeId}'),
+                    key: ValueKey('yt_${meta.youtubeId}_$_playerSession'),
                     controller: _wv!,
                   ),
                 ),
@@ -943,7 +955,6 @@ class _FullscreenYouTubePageState extends State<_FullscreenYouTubePage> {
     _controller = WebViewController()
       ..setJavaScriptMode(JavaScriptMode.unrestricted)
       ..setBackgroundColor(const Color(0xFF000000))
-      ..setMediaPlaybackRequiresUserGesture(false)
       ..setNavigationDelegate(
         NavigationDelegate(
           onPageStarted: (_) => setState(() {
@@ -952,7 +963,7 @@ class _FullscreenYouTubePageState extends State<_FullscreenYouTubePage> {
           }),
           onPageFinished: (_) => setState(() => _loading = false),
           onWebResourceError: (err) {
-            if (!err.isForMainFrame) return;
+            if (err.isForMainFrame != true) return;
             setState(() {
               _loading = false;
               _error = 'Error (${err.errorCode}): ${err.description}';
