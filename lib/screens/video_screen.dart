@@ -1,10 +1,8 @@
 // lib/screens/video_screen.dart
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
-import 'package:webview_flutter/webview_flutter.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:url_launcher/url_launcher.dart';
-import 'package:flutter/services.dart';
 
 import '../widgets/app_top_bar.dart';
 import '../widgets/app_bottom_nav.dart';
@@ -51,16 +49,9 @@ class _VideoScreenState extends State<VideoScreen> {
   // Búsqueda local
   String _search = '';
 
-  // Player (WebView)
-  WebViewController? _wv;
-  bool _showPlayer = false; // muestra WebView solo cuando el usuario le da play
-  bool _playerLoading = false;
-  String? _playerError;
-
   String? _activeVideoId;
   _VideoMeta? _activeMeta;
   String? _scheduledInitialId;
-  int _playerSession = 0;
 
   // ---- Firestore stream ----
   Stream<QuerySnapshot<Map<String, dynamic>>> _videosStream() {
@@ -136,90 +127,13 @@ class _VideoScreenState extends State<VideoScreen> {
     return 1 << 30;
   }
 
-  // Embed “nocookie” (preview primero), y play al tocar.
-  String _embedUrl(String id, {required bool autoplay}) =>
-      'https://www.youtube-nocookie.com/embed/$id'
-      '?playsinline=1'
-      '&autoplay=${autoplay ? 1 : 0}'
-      '&controls=1'
-      '&modestbranding=1'
-      '&rel=0'
-      '&fs=1'
-      '&iv_load_policy=3';
-
   String _watchUrl(String id) => 'https://www.youtube.com/watch?v=$id';
   String _thumbUrl(String id) => 'https://img.youtube.com/vi/$id/hqdefault.jpg';
 
-  WebViewController _buildWebViewController(int sessionId) {
-    return WebViewController()
-      ..setJavaScriptMode(JavaScriptMode.unrestricted)
-      ..setBackgroundColor(const Color(0xFF000000))
-      ..setNavigationDelegate(
-        NavigationDelegate(
-          onPageStarted: (_) {
-            if (!mounted) return;
-            if (sessionId != _playerSession) return;
-            setState(() {
-              _playerLoading = true;
-              _playerError = null;
-            });
-          },
-          onPageFinished: (_) {
-            if (!mounted) return;
-            if (sessionId != _playerSession) return;
-            setState(() => _playerLoading = false);
-          },
-          onWebResourceError: (err) {
-            if (err.isForMainFrame != true) return;
-            if (!mounted) return;
-            if (sessionId != _playerSession) return;
-            setState(() {
-              _playerLoading = false;
-              _playerError =
-                  'No se pudo cargar el reproductor (${err.errorCode}). ${err.description}';
-              _showPlayer = false;
-            });
-          },
-        ),
-      );
-  }
-
-  Future<void> _playActive() async {
-    final v = _activeMeta;
-    if (v == null) return;
-
-    final sessionId = ++_playerSession;
-    final controller = _buildWebViewController(sessionId);
-
-    setState(() {
-      _wv = controller;
-      _playerError = null;
-      _showPlayer = true;
-      _playerLoading = true;
-    });
-
-    try {
-      await controller.loadRequest(Uri.parse(_embedUrl(v.youtubeId, autoplay: true)));
-    } catch (e) {
-      if (!mounted) return;
-      if (sessionId != _playerSession) return;
-      setState(() {
-        _playerLoading = false;
-        _playerError = 'Error al iniciar el reproductor: $e';
-        _showPlayer = false;
-      });
-    }
-  }
-
   void _selectVideo(_VideoMeta v) {
     setState(() {
-      _playerSession++;
-      _wv = null;
       _activeMeta = v;
       _activeVideoId = v.youtubeId;
-      _playerError = null;
-      _showPlayer = false;
-      _playerLoading = false;
     });
   }
 
@@ -234,9 +148,6 @@ class _VideoScreenState extends State<VideoScreen> {
       if (_activeVideoId == null) {
         _activeMeta = list.first;
         _activeVideoId = id;
-        _showPlayer = false;
-        _playerError = null;
-        _playerLoading = false;
         setState(() {});
       }
       _scheduledInitialId = null;
@@ -384,32 +295,6 @@ class _VideoScreenState extends State<VideoScreen> {
     }
   }
 
-  // ✅ Abre pantalla completa (propia) con botón cerrar
-  Future<void> _openFullscreen() async {
-    final meta = _activeMeta;
-    if (meta == null) return;
-
-    // evita tener 2 players simultáneos en pantalla
-    setState(() {
-      _playerSession++;
-      _wv = null;
-      _showPlayer = false;
-      _playerLoading = false;
-    });
-
-    await Navigator.of(context).push(
-      MaterialPageRoute(
-        builder: (_) => _FullscreenYouTubePage(
-          youtubeId: meta.youtubeId,
-          title: meta.title.isEmpty ? 'Video' : meta.title,
-          embedUrl: _embedUrl(meta.youtubeId, autoplay: true),
-          onOpenExternal: () => _openInYouTube(meta.youtubeId),
-        ),
-        fullscreenDialog: true,
-      ),
-    );
-  }
-
   Widget _playerBlock() {
     final meta = _activeMeta;
     if (meta == null) return const SizedBox.shrink();
@@ -425,127 +310,66 @@ class _VideoScreenState extends State<VideoScreen> {
           child: Stack(
             fit: StackFit.expand,
             children: [
-              Image.network(
-                thumb,
-                fit: BoxFit.cover,
-                errorBuilder: (_, __, ___) => Container(
-                  color: Colors.black,
-                  alignment: Alignment.center,
-                  child: const Icon(Icons.ondemand_video,
-                      color: _CapColors.gold, size: 42),
+              Material(
+                color: Colors.transparent,
+                child: InkWell(
+                  onTap: () => _openInYouTube(meta.youtubeId),
+                  child: Image.network(
+                    thumb,
+                    fit: BoxFit.cover,
+                    errorBuilder: (_, __, ___) => Container(
+                      color: Colors.black,
+                      alignment: Alignment.center,
+                      child: const Icon(Icons.ondemand_video,
+                          color: _CapColors.gold, size: 42),
+                    ),
+                  ),
                 ),
               ),
-
-              // WebView encima si está activo
-              if (_showPlayer && _wv != null)
-                Positioned.fill(
-                  child: WebViewWidget(
-                    key: ValueKey('yt_${meta.youtubeId}_$_playerSession'),
-                    controller: _wv!,
-                  ),
-                ),
-
-              // Overlay play si NO está el player
-              if (!_showPlayer)
-                Material(
-                  color: Colors.black.withOpacity(.25),
-                  child: InkWell(
-                    onTap: _playActive,
-                    child: Center(
-                      child: Container(
-                        width: 68,
-                        height: 68,
-                        decoration: const BoxDecoration(
-                          shape: BoxShape.circle,
-                          gradient: LinearGradient(
-                            colors: [_CapColors.gold, _CapColors.goldDark],
-                          ),
-                        ),
-                        child: const Icon(Icons.play_arrow,
-                            color: Colors.black, size: 38),
-                      ),
-                    ),
-                  ),
-                ),
-
-              // ✅ Botón fullscreen (cuando el player está activo)
-              if (_showPlayer)
-                Positioned(
-                  right: 10,
-                  bottom: 10,
-                  child: InkWell(
-                    onTap: _openFullscreen,
-                    borderRadius: BorderRadius.circular(10),
+              Material(
+                color: Colors.black.withOpacity(.25),
+                child: InkWell(
+                  onTap: () => _openInYouTube(meta.youtubeId),
+                  child: Center(
                     child: Container(
-                      padding: const EdgeInsets.all(8),
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 18, vertical: 12),
                       decoration: BoxDecoration(
-                        color: _CapColors.surface.withOpacity(.85),
-                        borderRadius: BorderRadius.circular(10),
-                        border: Border.all(color: Colors.white12),
-                      ),
-                      child: const Icon(
-                        Icons.fullscreen,
-                        color: _CapColors.gold,
-                        size: 22,
-                      ),
-                    ),
-                  ),
-                ),
-
-              if (_playerLoading)
-                const Positioned(
-                  left: 12,
-                  top: 12,
-                  child: SizedBox(
-                    width: 22,
-                    height: 22,
-                    child: CircularProgressIndicator(strokeWidth: 2),
-                  ),
-                ),
-
-              if (_playerError != null && !_showPlayer)
-                Positioned(
-                  left: 10,
-                  right: 10,
-                  bottom: 10,
-                  child: Container(
-                    padding: const EdgeInsets.all(10),
-                    decoration: BoxDecoration(
-                      color: _CapColors.surface.withOpacity(.95),
-                      borderRadius: BorderRadius.circular(10),
-                      border: Border.all(color: Colors.white12),
-                    ),
-                    child: Row(
-                      children: [
-                        const Icon(Icons.error_outline,
-                            color: Colors.orangeAccent, size: 18),
-                        const SizedBox(width: 8),
-                        Expanded(
-                          child: Text(
-                            _playerError!,
-                            maxLines: 2,
-                            overflow: TextOverflow.ellipsis,
-                            style: const TextStyle(
-                              color: _CapColors.textMuted,
-                              fontSize: 12,
-                            ),
-                          ),
+                        gradient: const LinearGradient(
+                          colors: [_CapColors.gold, _CapColors.goldDark],
                         ),
-                        const SizedBox(width: 8),
-                        TextButton(
-                          onPressed: () => _openInYouTube(meta.youtubeId),
-                          child: const Text(
-                            'Abrir',
+                        borderRadius: BorderRadius.circular(14),
+                        boxShadow: const [
+                          BoxShadow(
+                            color: Colors.black38,
+                            blurRadius: 12,
+                            offset: Offset(0, 4),
+                          ),
+                        ],
+                      ),
+                      child: const Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(
+                            Icons.open_in_new_rounded,
+                            color: Colors.black,
+                            size: 20,
+                          ),
+                          SizedBox(width: 8),
+                          Text(
+                            'Abrir en YouTube',
                             style: TextStyle(
-                              color: _CapColors.gold,
-                              fontWeight: FontWeight.w800,
+                              color: Colors.black,
+                              fontWeight: FontWeight.w900,
+                              fontSize: 15,
                             ),
                           ),
-                        ),
-                      ],
+                        ],
+                      ),
                     ),
                   ),
                 ),
+              ),
             ],
           ),
         ),
@@ -913,194 +737,6 @@ class _VideoListTile extends StatelessWidget {
               },
             ),
           ],
-        ),
-      ),
-    );
-  }
-}
-
-/// ✅ Pantalla completa propia (con botón de cerrar)
-class _FullscreenYouTubePage extends StatefulWidget {
-  const _FullscreenYouTubePage({
-    required this.youtubeId,
-    required this.title,
-    required this.embedUrl,
-    required this.onOpenExternal,
-  });
-
-  final String youtubeId;
-  final String title;
-  final String embedUrl;
-  final VoidCallback onOpenExternal;
-
-  @override
-  State<_FullscreenYouTubePage> createState() => _FullscreenYouTubePageState();
-}
-
-class _FullscreenYouTubePageState extends State<_FullscreenYouTubePage> {
-  late final WebViewController _controller;
-  bool _loading = true;
-  String? _error;
-
-  List<DeviceOrientation> _prevOrientations = const [];
-  SystemUiMode? _prevUiMode;
-
-  @override
-  void initState() {
-    super.initState();
-
-    // Guardar estado anterior y forzar modo fullscreen
-    _enterFullscreen();
-
-    _controller = WebViewController()
-      ..setJavaScriptMode(JavaScriptMode.unrestricted)
-      ..setBackgroundColor(const Color(0xFF000000))
-      ..setNavigationDelegate(
-        NavigationDelegate(
-          onPageStarted: (_) => setState(() {
-            _loading = true;
-            _error = null;
-          }),
-          onPageFinished: (_) => setState(() => _loading = false),
-          onWebResourceError: (err) {
-            if (err.isForMainFrame != true) return;
-            setState(() {
-              _loading = false;
-              _error = 'Error (${err.errorCode}): ${err.description}';
-            });
-          },
-        ),
-      )
-      ..loadRequest(Uri.parse(widget.embedUrl));
-  }
-
-  Future<void> _enterFullscreen() async {
-    // Nota: Flutter no expone lectura directa de orientaciones previas.
-    // Guardamos “best effort” y restauramos a portrait al salir.
-    _prevOrientations = const [
-      DeviceOrientation.portraitUp,
-      DeviceOrientation.portraitDown,
-      DeviceOrientation.landscapeLeft,
-      DeviceOrientation.landscapeRight,
-    ];
-    _prevUiMode = SystemUiMode.edgeToEdge;
-
-    await SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
-    await SystemChrome.setPreferredOrientations(const [
-      DeviceOrientation.landscapeLeft,
-      DeviceOrientation.landscapeRight,
-    ]);
-  }
-
-  Future<void> _exitFullscreen() async {
-    await SystemChrome.setEnabledSystemUIMode(
-        _prevUiMode ?? SystemUiMode.edgeToEdge);
-    // Restaurar a portrait para que tu app no se quede “acostada”
-    await SystemChrome.setPreferredOrientations(const [
-      DeviceOrientation.portraitUp,
-    ]);
-  }
-
-  @override
-  void dispose() {
-    _exitFullscreen();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return WillPopScope(
-      onWillPop: () async {
-        await _exitFullscreen();
-        return true;
-      },
-      child: Scaffold(
-        backgroundColor: Colors.black,
-        body: SafeArea(
-          child: Stack(
-            children: [
-              Positioned.fill(child: WebViewWidget(controller: _controller)),
-
-              if (_loading)
-                const Positioned(
-                  left: 16,
-                  top: 16,
-                  child: SizedBox(
-                    width: 22,
-                    height: 22,
-                    child: CircularProgressIndicator(strokeWidth: 2),
-                  ),
-                ),
-
-              // ✅ Botón cerrar (arriba derecha)
-              Positioned(
-                right: 10,
-                top: 10,
-                child: InkWell(
-                  onTap: () async {
-                    await _exitFullscreen();
-                    if (context.mounted) Navigator.of(context).pop();
-                  },
-                  borderRadius: BorderRadius.circular(12),
-                  child: Container(
-                    padding: const EdgeInsets.all(10),
-                    decoration: BoxDecoration(
-                      color: const Color(0xFF1C1C21).withOpacity(.85),
-                      borderRadius: BorderRadius.circular(12),
-                      border: Border.all(color: Colors.white12),
-                    ),
-                    child: const Icon(Icons.close,
-                        color: _CapColors.gold, size: 22),
-                  ),
-                ),
-              ),
-
-              // Error + abrir externo
-              if (_error != null)
-                Positioned(
-                  left: 14,
-                  right: 14,
-                  bottom: 14,
-                  child: Container(
-                    padding: const EdgeInsets.all(12),
-                    decoration: BoxDecoration(
-                      color: const Color(0xFF1C1C21).withOpacity(.95),
-                      borderRadius: BorderRadius.circular(12),
-                      border: Border.all(color: Colors.white12),
-                    ),
-                    child: Row(
-                      children: [
-                        const Icon(Icons.error_outline,
-                            color: Colors.orangeAccent, size: 18),
-                        const SizedBox(width: 8),
-                        Expanded(
-                          child: Text(
-                            _error!,
-                            maxLines: 2,
-                            overflow: TextOverflow.ellipsis,
-                            style: const TextStyle(
-                              color: Color(0xFFBEBEC6),
-                              fontSize: 12,
-                            ),
-                          ),
-                        ),
-                        const SizedBox(width: 8),
-                        TextButton(
-                          onPressed: widget.onOpenExternal,
-                          child: const Text(
-                            'Abrir en YouTube',
-                            style: TextStyle(
-                              color: _CapColors.gold,
-                              fontWeight: FontWeight.w800,
-                            ),
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                ),
-            ],
-          ),
         ),
       ),
     );
