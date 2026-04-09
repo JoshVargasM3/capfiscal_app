@@ -45,13 +45,17 @@ android {
         }
     }
 
-    buildTypes {
-        release {
-            signingConfig keystorePropertiesFile.exists()
-                    ? signingConfigs.release
-                    : signingConfigs.debug
-        }
+   buildTypes {
+    release {
+        signingConfig keystorePropertiesFile.exists()
+                ? signingConfigs.release
+                : signingConfigs.debug
+
+        // ✅ Desactiva R8/shrinking para evitar el error de Stripe
+        minifyEnabled false
+        shrinkResources false
     }
+}
 
     // Recomendado para varias libs AndroidX (no estorba si no se usa)
     buildFeatures {

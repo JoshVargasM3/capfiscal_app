@@ -16,6 +16,10 @@
 - `ANDROID_PACKAGE_NAME` (para abrir Play Store manage subscriptions)
 - `IOS_BUNDLE_ID` (si necesitas usarlo en enlaces internos)
 
+**In-App Purchases (móvil)**
+- `ANDROID_SUBSCRIPTION_ID` (Product ID de Google Play)
+- `IOS_SUBSCRIPTION_ID` (Product ID de App Store)
+
 ### Cómo configurar (dev/prod)
 **Recomendado (CI/CD):**
 - Usa `--dart-define-from-file` con un archivo NO versionado.
@@ -34,7 +38,9 @@
   "STRIPE_PRICE_ID": "price_...",
   "SUBSCRIPTION_MERCHANT_NAME": "CAPFISCAL",
   "ANDROID_PACKAGE_NAME": "com.capfiscal.biblioteca",
-  "IOS_BUNDLE_ID": "com.capfiscal.biblioteca"
+  "IOS_BUNDLE_ID": "com.capfiscal.biblioteca",
+  "ANDROID_SUBSCRIPTION_ID": "capfiscal_monthly",
+  "IOS_SUBSCRIPTION_ID": "capfiscal_monthly"
 }
 ```
 
@@ -85,6 +91,7 @@
 
 - [ ] `STRIPE_PUBLISHABLE_KEY` y `STRIPE_PAYMENT_INTENT_URL` configurados.
 - [ ] Checkout Web configurado (si aplica).
+- [ ] Product IDs de IAP configurados (Android/iOS).
 - [ ] Links de **Manage Subscription** funcionando (iOS/Play Store).
 - [ ] Permisos iOS mínimos: Fotos (si actualizas foto de perfil).
 - [ ] `usesCleartextTraffic` deshabilitado (Android).

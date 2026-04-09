@@ -2,6 +2,7 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:firebase_storage/firebase_storage.dart';
+import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../widgets/custom_drawer.dart';
@@ -439,38 +440,52 @@ class _HomeScreenState extends State<HomeScreen> {
               ),
               Padding(
                 padding: const EdgeInsets.symmetric(horizontal: 12),
-                child: Row(
-                  children: [
-                    _CategoryButton(
-                      icon: Icons.description_rounded,
-                      label: 'Documentos',
-                      onTap: () => Navigator.pushReplacementNamed(
-                        context,
-                        '/biblioteca',
-                      ),
-                    ),
-                    const SizedBox(width: 12),
-                    _CategoryButton(
-                      icon: Icons.play_arrow_rounded,
-                      label: 'Videos',
-                      onTap: () =>
-                          Navigator.pushReplacementNamed(context, '/video'),
-                    ),
-                    const SizedBox(width: 12),
-                    _CategoryButton(
-                      icon: Icons.forum_rounded,
-                      label: 'Chat',
-                      onTap: () =>
-                          Navigator.pushReplacementNamed(context, '/chat'),
-                    ),
-                    const SizedBox(width: 12),
-                    _CategoryButton(
-                      icon: Icons.favorite_rounded,
-                      label: 'Favoritos',
-                      onTap: () =>
-                          Navigator.pushReplacementNamed(context, '/perfil'),
-                    ),
-                  ],
+                child: LayoutBuilder(
+                  builder: (context, constraints) {
+                    final compact = constraints.maxWidth < 430;
+                    final spacing = 12.0;
+                    final columns = compact ? 2 : 4;
+                    final itemWidth =
+                        (constraints.maxWidth - (spacing * (columns - 1))) /
+                            columns;
+
+                    return Wrap(
+                      spacing: spacing,
+                      runSpacing: spacing,
+                      children: [
+                        _CategoryButton(
+                          width: itemWidth,
+                          icon: Icons.description_rounded,
+                          label: 'Documentos',
+                          onTap: () => Navigator.pushReplacementNamed(
+                            context,
+                            '/biblioteca',
+                          ),
+                        ),
+                        _CategoryButton(
+                          width: itemWidth,
+                          icon: Icons.play_arrow_rounded,
+                          label: 'Videos',
+                          onTap: () =>
+                              Navigator.pushReplacementNamed(context, '/video'),
+                        ),
+                        _CategoryButton(
+                          width: itemWidth,
+                          icon: Icons.forum_rounded,
+                          label: 'Chat',
+                          onTap: () =>
+                              Navigator.pushReplacementNamed(context, '/chat'),
+                        ),
+                        _CategoryButton(
+                          width: itemWidth,
+                          icon: Icons.favorite_rounded,
+                          label: 'Favoritos',
+                          onTap: () =>
+                              Navigator.pushReplacementNamed(context, '/perfil'),
+                        ),
+                      ],
+                    );
+                  },
                 ),
               ),
 
@@ -487,15 +502,15 @@ class _HomeScreenState extends State<HomeScreen> {
                   children: [
                     _SocialChip(
                       color: const Color(0xFF000000),
-                      icon: Icons.music_note, // TikTok
+                      icon: FontAwesomeIcons.tiktok,
                       label: '@capfiscal.corporativo',
                       onTap: () => _openUrl(
                         'https://www.tiktok.com/@capfiscal.corporativo',
                       ),
                     ),
                     _SocialChip(
-                      color: Colors.red,
-                      icon: Icons.ondemand_video, // YouTube
+                      color: const Color(0xFFFF0000),
+                      icon: FontAwesomeIcons.youtube,
                       label: '@CapFiscalMéxico',
                       onTap: () => _openUrl(
                         'https://www.youtube.com/@CapFiscalM%C3%A9xico',
@@ -503,15 +518,15 @@ class _HomeScreenState extends State<HomeScreen> {
                     ),
                     _SocialChip(
                       color: Colors.green,
-                      icon: Icons.podcasts, // Spotify/Podcast
+                      icon: FontAwesomeIcons.spotify,
                       label: 'Capfiscal Sin Filtro',
                       onTap: () => _openUrl(
                         'https://open.spotify.com/show/7maJrFMnD8uyUfZkt1d5Xh?si=94736585551e4549',
                       ),
                     ),
                     _SocialChip(
-                      color: Colors.purple,
-                      icon: Icons.camera_alt, // Instagram
+                      color: const Color(0xFFE4405F),
+                      icon: FontAwesomeIcons.instagram,
                       label: '@capfiscal.corporativo',
                       onTap: () => _openUrl(
                         'https://www.instagram.com/capfiscal.corporativo/?next=%2F',
@@ -659,18 +674,21 @@ class _HomeScreenState extends State<HomeScreen> {
 
 class _CategoryButton extends StatelessWidget {
   const _CategoryButton({
+    required this.width,
     required this.icon,
     required this.label,
     required this.onTap,
   });
 
+  final double width;
   final IconData icon;
   final String label;
   final VoidCallback onTap;
 
   @override
   Widget build(BuildContext context) {
-    return Expanded(
+    return SizedBox(
+      width: width,
       child: Material(
         color: _CapColors.surface,
         borderRadius: BorderRadius.circular(14),
@@ -681,12 +699,12 @@ class _CategoryButton extends StatelessWidget {
           child: ConstrainedBox(
             constraints: const BoxConstraints(minHeight: 92),
             child: Padding(
-              padding: const EdgeInsets.symmetric(vertical: 14, horizontal: 8),
+              padding: const EdgeInsets.symmetric(vertical: 14, horizontal: 10),
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
                   Icon(icon, color: Colors.white, size: 26),
-                  const SizedBox(height: 6),
+                  const SizedBox(height: 8),
                   Text(
                     label,
                     textAlign: TextAlign.center,
@@ -696,8 +714,8 @@ class _CategoryButton extends StatelessWidget {
                     style: const TextStyle(
                       color: _CapColors.text,
                       fontWeight: FontWeight.w700,
-                      fontSize: 13,
-                      height: 1.1,
+                      fontSize: 12.5,
+                      height: 1.15,
                     ),
                   ),
                 ],
@@ -745,7 +763,7 @@ class _SocialChip extends StatelessWidget {
         child: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Icon(icon, color: color),
+            FaIcon(icon, color: color, size: 18),
             const SizedBox(width: 8),
             const SizedBox(width: 2),
             Text(

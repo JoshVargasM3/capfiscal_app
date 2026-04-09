@@ -1,8 +1,10 @@
+import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 class FavoritesManager {
   // Clave global antigua (compat)
   static const String _legacyKey = 'favorite_files';
+  static final ValueNotifier<int> changes = ValueNotifier<int>(0);
 
   // Clave namespaced por usuario
   static String _key(String uid) => 'favorite_files_$uid';
@@ -41,6 +43,7 @@ class FavoritesManager {
       list.add(itemKey);
     }
     await sp.setStringList(key, list);
+    changes.value++;
   }
 
   /// Verifica si un item es favorito para el usuario.
@@ -53,5 +56,6 @@ class FavoritesManager {
   static Future<void> clearFavorites(String uid) async {
     final sp = await SharedPreferences.getInstance();
     await sp.remove(_key(uid));
+    changes.value++;
   }
 }

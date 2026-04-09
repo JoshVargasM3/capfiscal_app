@@ -811,17 +811,17 @@ class _SpecialistField extends StatelessWidget {
 final List<FaqEntry> _faqEntries = <FaqEntry>[
   const FaqEntry(
     id: 'suscripcion_estado',
-    question: '¿Mi suscripción está activa?',
+    question: '¿Cómo restauro mis compras?',
     answer:
-        'Puedes revisar el estado y la fecha de renovación en tu Perfil > Datos de la suscripción. Si aparece "Expira pronto" te avisaremos con 3 días de anticipación.',
-    keywords: <String>['suscripción', 'estado', 'vigencia', 'renovación'],
+        'Puedes restaurar tus compras de documentos desde tu Perfil. La app volverá a consultar las compras válidas realizadas en App Store o Google Play.',
+    keywords: <String>['restaurar', 'compras', 'documentos', 'restore'],
   ),
   const FaqEntry(
     id: 'metodos_pago',
-    question: '¿Cómo actualizo mi tarjeta?',
+    question: '¿Cómo se procesa el pago de documentos?',
     answer:
-        'Desde tu Perfil ahora puedes editar el método principal o agregar una tarjeta alterna. Usamos Stripe para resguardar los datos.',
-    keywords: <String>['método', 'tarjeta', 'pago', 'actualizar'],
+        'Los documentos digitales se compran únicamente dentro de la app mediante App Store o Google Play. Tu método de pago se administra desde la configuración de tu cuenta en la tienda.',
+    keywords: <String>['pago', 'documentos', 'app store', 'google play'],
   ),
   const FaqEntry(
     id: 'facturacion',
