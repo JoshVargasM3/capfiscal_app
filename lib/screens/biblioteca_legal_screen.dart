@@ -416,7 +416,22 @@ class _BibliotecaLegalScreenState extends State<BibliotecaLegalScreen> {
   // ─────────────────────────────
   // Download & open (por storagePath)
   // ─────────────────────────────
-  Future<void> _downloadAndOpenStoragePath(String storagePath) async {
+  Future<void> _downloadAndOpenStoragePath(
+    DocBundle bundle,
+    String storagePath,
+  ) async {
+    if (!_isPurchasedBundle(bundle)) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+            'Necesitas una compra válida para abrir el documento completo.',
+          ),
+        ),
+      );
+      return;
+    }
+
     try {
       final ref = _storage.ref(storagePath);
       final dir = await getApplicationDocumentsDirectory();
@@ -595,6 +610,7 @@ class _BibliotecaLegalScreenState extends State<BibliotecaLegalScreen> {
                               ElevatedButton(
                                 onPressed: purchased
                                     ? () => _downloadAndOpenStoragePath(
+                                          b,
                                           f.storagePath,
                                         )
                                     : null,

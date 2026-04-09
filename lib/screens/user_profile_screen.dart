@@ -100,6 +100,7 @@ class _UserProfileScreenState extends State<UserProfileScreen>
   // Compras por documento (entitlements)
   bool _restoring = false;
   Set<String> _purchasedProductIds = <String>{};
+  final Map<String, String> _bundleProductIdByStoragePath = <String, String>{};
 
   // Meta
   DateTime? _createdAt;
@@ -111,6 +112,7 @@ class _UserProfileScreenState extends State<UserProfileScreen>
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    FavoritesManager.changes.addListener(_handleFavoritesChanged);
 
     _auth = widget.auth ?? FirebaseAuth.instance;
     _db = widget.firestore ?? FirebaseFirestore.instance;
@@ -128,6 +130,7 @@ class _UserProfileScreenState extends State<UserProfileScreen>
 
   @override
   void dispose() {
+    FavoritesManager.changes.removeListener(_handleFavoritesChanged);
     WidgetsBinding.instance.removeObserver(this);
     _purchaseSub?.cancel();
 
@@ -144,14 +147,21 @@ class _UserProfileScreenState extends State<UserProfileScreen>
       final u = _auth.currentUser;
       if (u != null) {
         unawaited(u.reload().then((_) {
-          if (mounted) setState(() {});
+          if (!mounted) return;
+          _handleFavoritesChanged();
+          setState(() {});
         }));
       }
     }
   }
 
+  void _handleFavoritesChanged() {
+    if (!mounted || _loadingFavs) return;
+    unawaited(_loadFavorites());
+  }
+
   // ─────────────────────────────
-  // Helpers: docKey/productId (idéntico a Biblioteca)
+  // Helpers: docKey/productId
   // ─────────────────────────────
   String _docKeyFromFilename(String name) {
     var base = name;
@@ -169,9 +179,32 @@ class _UserProfileScreenState extends State<UserProfileScreen>
     return 'capfiscal_doc_$key';
   }
 
+  String _bundleProductIdForDocId(String docId) => 'capfiscal_bundle_$docId';
+
+  String? _bundleProductIdForRef(Reference ref) {
+    final fullPath = ref.fullPath.trim();
+    if (fullPath.isNotEmpty) {
+      final pid = _bundleProductIdByStoragePath[fullPath];
+      if (pid != null && pid.isNotEmpty) return pid;
+    }
+
+    final docsPath = '$_docsFolder/${ref.name}'.trim();
+    final byDocsPath = _bundleProductIdByStoragePath[docsPath];
+    if (byDocsPath != null && byDocsPath.isNotEmpty) return byDocsPath;
+
+    return null;
+  }
+
   bool _isPurchased(Reference ref) {
-    final pid = _productIdForRef(ref);
-    return _purchasedProductIds.contains(pid);
+    final legacyPid = _productIdForRef(ref);
+    if (_purchasedProductIds.contains(legacyPid)) return true;
+
+    final bundlePid = _bundleProductIdForRef(ref);
+    if (bundlePid != null && _purchasedProductIds.contains(bundlePid)) {
+      return true;
+    }
+
+    return false;
   }
 
   // ─────────────────────────────
@@ -511,6 +544,41 @@ class _UserProfileScreenState extends State<UserProfileScreen>
           .map((e) => e.toString().trim())
           .where((e) => e.isNotEmpty)
           .toSet();
+      final docFavoriteKeys = favSet.where((e) => e.startsWith('doc:')).toList()
+        ..sort();
+
+      if (kDebugMode) {
+        debugPrint('⭐️ Doc favorite keys: $docFavoriteKeys');
+      }
+
+      _bundleProductIdByStoragePath.clear();
+      final Map<String, Reference> favDocRefsByPath = <String, Reference>{};
+
+      final docsCatalog = await _db.collection('documents').get();
+      for (final d in docsCatalog.docs) {
+        final data = d.data();
+        final rawFiles =
+            (data['files'] is List) ? List.from(data['files'] as List) : const [];
+        final bundlePid = _bundleProductIdForDocId(d.id);
+
+        for (final rawFile in rawFiles.whereType<Map>()) {
+          final map = Map<String, dynamic>.from(rawFile);
+          final storagePath = (map['storagePath'] ?? '').toString().trim();
+          if (storagePath.isEmpty) continue;
+          _bundleProductIdByStoragePath[storagePath] = bundlePid;
+
+          final ref = _storage.ref(storagePath);
+          if (kDebugMode) {
+            debugPrint('📄 documents.files storagePath: ${ref.fullPath}');
+          }
+          if (_isFavDocRef(favSet, ref)) {
+            favDocRefsByPath[ref.fullPath] = ref;
+            if (kDebugMode) {
+              debugPrint('✅ Matched favorite doc from documents: ${ref.fullPath}');
+            }
+          }
+        }
+      }
 
       // -----------------------------
       // 1) ✅ BUNDLES favoritos (Firestore: documents/{docId})
@@ -559,12 +627,24 @@ class _UserProfileScreenState extends State<UserProfileScreen>
 
       // -----------------------------
       // 2) DOCS favoritos (Storage: docs/**) ✅ ahora recursivo
-      // Soporta DOCX/PDF/etc dentro de subcarpetas
+      // Primero intentamos resolverlos desde documents.files[].storagePath
+      // y dejamos el barrido de Storage como fallback legacy.
       // -----------------------------
       final allDocRefs = await _listAllRecursive(_storage.ref(_docsFolder));
+      for (final ref in allDocRefs) {
+        if (_isFavDocRef(favSet, ref)) {
+          favDocRefsByPath.putIfAbsent(ref.fullPath, () => ref);
+        }
+      }
 
-      final docs = allDocRefs.where((ref) => _isFavDocRef(favSet, ref)).toList()
+      final docs = favDocRefsByPath.values.toList()
         ..sort((a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()));
+
+      if (kDebugMode) {
+        debugPrint(
+          '🗂️ Final favorite docs in profile: ${docs.map((e) => e.fullPath).toList()}',
+        );
+      }
 
       // -----------------------------
       // 3) VIDEOS favoritos (tu lógica actual)
@@ -603,6 +683,9 @@ class _UserProfileScreenState extends State<UserProfileScreen>
         _favVideos = vids;
         _loadingFavs = false;
       });
+      if (kDebugMode) {
+        debugPrint('📚 Favorite docs rendered count: ${_favDocs.length}');
+      }
     } catch (_) {
       if (!mounted) return;
       setState(() => _loadingFavs = false);

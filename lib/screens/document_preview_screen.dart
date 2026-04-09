@@ -188,11 +188,21 @@ class _DocumentPreviewScreenState extends State<DocumentPreviewScreen> {
     });
 
     try {
+      final ref = widget.storage.ref('$_docsFolder/${widget.title}');
+      if (!widget.isPurchased) {
+        final thumb = await _loadThumbBytesForFileName(widget.title);
+        if (!mounted) return;
+        setState(() {
+          _singleImageBytes = thumb;
+          _loading = false;
+        });
+        return;
+      }
+
       final tmp = await getTemporaryDirectory();
       final local = File('${tmp.path}/${_safeFileName(widget.title)}');
 
       // Descarga desde Storage: docs/<archivo.ext>
-      final ref = widget.storage.ref('$_docsFolder/${widget.title}');
       await ref.writeToFile(local);
       _localFile = local;
 
@@ -260,19 +270,6 @@ class _DocumentPreviewScreenState extends State<DocumentPreviewScreen> {
       }
 
       // 4) Otros tipos (DOCX/XLSX/PPTX/RTF/etc)
-      //    - Si NO está comprado: mostramos thumbnail (primera “página”) para no regalar el documento completo.
-      //    - Si está comprado: lo visualizamos dentro de la app con visor web (Office/Google).
-      if (!widget.isPurchased) {
-        final thumb = await _loadThumbBytesForFileName(widget.title);
-        if (!mounted) return;
-        setState(() {
-          _singleImageBytes =
-              thumb; // puede ser null => se verá "sin vista previa"
-          _loading = false;
-        });
-        return;
-      }
-
       // Comprado: usar viewer web con downloadURL
       final downloadUrl = await ref.getDownloadURL();
       final viewer = _isOffice
