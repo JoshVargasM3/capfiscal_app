@@ -15,9 +15,12 @@ class FavoritesManager {
     final userKey = _key(uid);
 
     if (sp.containsKey(userKey)) return; // ya migrado para este uid
+
     final legacy = sp.getStringList(_legacyKey);
     if (legacy != null && legacy.isNotEmpty) {
-      await sp.setStringList(userKey, legacy);
+      final existing = sp.getStringList(userKey) ?? <String>[];
+      final merged = {...existing, ...legacy}.toList();
+      await sp.setStringList(userKey, merged);
       // Si quieres eliminar completamente los globales, descomenta:
       // await sp.remove(_legacyKey);
     }
@@ -35,14 +38,15 @@ class FavoritesManager {
     await _migrateIfNeeded(uid);
     final sp = await SharedPreferences.getInstance();
     final key = _key(uid);
-    final list = sp.getStringList(key) ?? <String>[];
+    final set = <String>{...?sp.getStringList(key)};
 
-    if (list.contains(itemKey)) {
-      list.remove(itemKey);
+    if (set.contains(itemKey)) {
+      set.remove(itemKey);
     } else {
-      list.add(itemKey);
+      set.add(itemKey);
     }
-    await sp.setStringList(key, list);
+
+    await sp.setStringList(key, set.toList());
     changes.value++;
   }
 

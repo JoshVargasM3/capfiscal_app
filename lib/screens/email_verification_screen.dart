@@ -151,7 +151,10 @@ class _EmailVerificationScreenState extends State<EmailVerificationScreen>
                       const SizedBox(height: 8),
                       Text(
                         'Te enviamos un enlace de verificación a:\n$email\n\n'
-                        'Cuando lo verifiques, esta pantalla se actualizará automáticamente.',
+                        'Revisa tu bandeja de entrada, y también la carpeta de '
+                        'spam o correo no deseado, porque muchas veces '
+                        'llega allí. Cuando lo verifiques, esta pantalla '
+                        'se actualizará automáticamente.',
                         textAlign: TextAlign.center,
                         style: const TextStyle(
                           color: CapColors.textMuted,
@@ -186,7 +189,7 @@ class _EmailVerificationScreenState extends State<EmailVerificationScreen>
                         width: double.infinity,
                         height: 46,
                         child: OutlinedButton.icon(
-                          style: OutlinedButton.styleFrom(
+                          style: ElevatedButton.styleFrom(
                             side: const BorderSide(color: CapColors.goldDark),
                             foregroundColor: CapColors.gold,
                             shape: RoundedRectangleBorder(

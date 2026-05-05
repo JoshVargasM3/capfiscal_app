@@ -74,6 +74,7 @@ class _UserProfileScreenState extends State<UserProfileScreen>
   bool _saving = false;
   bool _editing = false;
   bool _signingOut = false;
+  bool _deletingAccount = false;
 
   Future<List<Reference>> _listAllRecursive(Reference root) async {
     final out = <Reference>[];
@@ -87,15 +88,15 @@ class _UserProfileScreenState extends State<UserProfileScreen>
     return out;
   }
 
-// Favoritos
+  // Favoritos
   bool _loadingFavs = true;
   List<Reference> _favDocs = [];
   List<FavVideo> _favVideos = [];
-  List<FavBundle> _favBundles = []; // ✅ NUEVO
+  List<FavBundle> _favBundles = [];
 
   // Foto perfil
-  String? _photoUrlRaw; // RAW guardado (sin cache-bust)
-  String? _photoUrl; // UI (con cache-bust)
+  String? _photoUrlRaw;
+  String? _photoUrl;
 
   // Compras por documento (entitlements)
   bool _restoring = false;
@@ -105,14 +106,12 @@ class _UserProfileScreenState extends State<UserProfileScreen>
   // Meta
   DateTime? _createdAt;
 
-  // ✅ Carpeta “fuente de verdad” para documentos (igual que Biblioteca)
   static const String _docsFolder = 'docs';
 
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
-    FavoritesManager.changes.addListener(_handleFavoritesChanged);
 
     _auth = widget.auth ?? FirebaseAuth.instance;
     _db = widget.firestore ?? FirebaseFirestore.instance;
@@ -125,13 +124,15 @@ class _UserProfileScreenState extends State<UserProfileScreen>
       onError: (_) {},
     );
 
+    FavoritesManager.changes.addListener(_handleFavoritesChanged);
+
     _loadProfile();
   }
 
   @override
   void dispose() {
-    FavoritesManager.changes.removeListener(_handleFavoritesChanged);
     WidgetsBinding.instance.removeObserver(this);
+    FavoritesManager.changes.removeListener(_handleFavoritesChanged);
     _purchaseSub?.cancel();
 
     _nameCtrl.dispose();
@@ -208,7 +209,7 @@ class _UserProfileScreenState extends State<UserProfileScreen>
   }
 
   // ─────────────────────────────
-  // Purchases stream (restores/purchases)
+  // Purchases stream
   // ─────────────────────────────
   Future<void> _handlePurchaseUpdates(List<PurchaseDetails> purchases) async {
     for (final p in purchases) {
@@ -258,7 +259,7 @@ class _UserProfileScreenState extends State<UserProfileScreen>
   }
 
   // ─────────────────────────────
-  // FOTO PERFIL (Storage como fuente de verdad)
+  // FOTO PERFIL
   // ─────────────────────────────
   String _cacheBustUrl(String url) {
     final ts = DateTime.now().millisecondsSinceEpoch.toString();
@@ -401,7 +402,6 @@ class _UserProfileScreenState extends State<UserProfileScreen>
           ? null
           : _cacheBustUrl(_photoUrlRaw!);
 
-      // Fuente de verdad: Storage
       final storageRaw = await _getProfilePhotoUrlRawFromStorage(user.uid);
       if (storageRaw != null && storageRaw.trim().isNotEmpty) {
         _photoUrlRaw = storageRaw.trim();
@@ -429,7 +429,7 @@ class _UserProfileScreenState extends State<UserProfileScreen>
   }
 
   // ─────────────────────────────
-  // FAVORITOS (fix: soporte legacy + nuevo)
+  // FAVORITOS
   // ─────────────────────────────
   String _extractYoutubeRaw(Map<String, dynamic> data) {
     final candidates = [
@@ -504,11 +504,6 @@ class _UserProfileScreenState extends State<UserProfileScreen>
     final keyByName = _docKeyFromFilename(name);
     final keyByPath = _docKeyFromFilename(baseFromPath);
 
-    // Soporta:
-    // - guardado como "ref.name" (nuevo)
-    // - guardado como docKey (legacy común)
-    // - guardado con prefijos "doc:" / "document:" (legacy)
-    // - guardado como fullPath (algunas implementaciones lo usan)
     final candidates = <String>{
       name,
       baseFromPath,
@@ -544,6 +539,7 @@ class _UserProfileScreenState extends State<UserProfileScreen>
           .map((e) => e.toString().trim())
           .where((e) => e.isNotEmpty)
           .toSet();
+
       final docFavoriteKeys = favSet.where((e) => e.startsWith('doc:')).toList()
         ..sort();
 
@@ -554,36 +550,42 @@ class _UserProfileScreenState extends State<UserProfileScreen>
       _bundleProductIdByStoragePath.clear();
       final Map<String, Reference> favDocRefsByPath = <String, Reference>{};
 
-      final docsCatalog = await _db.collection('documents').get();
+      final docsCatalog = await _db
+          .collection('documents')
+          .where('active', isEqualTo: true)
+          .get();
       for (final d in docsCatalog.docs) {
         final data = d.data();
-        final rawFiles =
-            (data['files'] is List) ? List.from(data['files'] as List) : const [];
+        final rawFiles = (data['files'] is List)
+            ? List.from(data['files'] as List)
+            : const [];
         final bundlePid = _bundleProductIdForDocId(d.id);
 
         for (final rawFile in rawFiles.whereType<Map>()) {
           final map = Map<String, dynamic>.from(rawFile);
           final storagePath = (map['storagePath'] ?? '').toString().trim();
           if (storagePath.isEmpty) continue;
+
           _bundleProductIdByStoragePath[storagePath] = bundlePid;
 
           final ref = _storage.ref(storagePath);
+
           if (kDebugMode) {
             debugPrint('📄 documents.files storagePath: ${ref.fullPath}');
           }
+
           if (_isFavDocRef(favSet, ref)) {
             favDocRefsByPath[ref.fullPath] = ref;
+
             if (kDebugMode) {
-              debugPrint('✅ Matched favorite doc from documents: ${ref.fullPath}');
+              debugPrint(
+                '✅ Matched favorite doc from documents: ${ref.fullPath}',
+              );
             }
           }
         }
       }
 
-      // -----------------------------
-      // 1) ✅ BUNDLES favoritos (Firestore: documents/{docId})
-      // Claves esperadas: "bundle:<docId>"
-      // -----------------------------
       final bundleIds = favSet
           .where((k) => k.startsWith('bundle:'))
           .map((k) => k.substring('bundle:'.length).trim())
@@ -592,7 +594,6 @@ class _UserProfileScreenState extends State<UserProfileScreen>
 
       final List<FavBundle> bundles = [];
 
-      // Firestore whereIn admite max 10 ids por query
       const chunkSize = 10;
       for (var i = 0; i < bundleIds.length; i += chunkSize) {
         final chunk = bundleIds.sublist(
@@ -602,6 +603,7 @@ class _UserProfileScreenState extends State<UserProfileScreen>
 
         final snap = await _db
             .collection('documents')
+            .where('active', isEqualTo: true)
             .where(FieldPath.documentId, whereIn: chunk)
             .get();
 
@@ -611,6 +613,7 @@ class _UserProfileScreenState extends State<UserProfileScreen>
           final desc = (data['description'] ?? '').toString().trim();
           final files =
               (data['files'] is List) ? (data['files'] as List) : const [];
+
           bundles.add(
             FavBundle(
               docId: d.id,
@@ -623,13 +626,9 @@ class _UserProfileScreenState extends State<UserProfileScreen>
       }
 
       bundles.sort(
-          (a, b) => a.title.toLowerCase().compareTo(b.title.toLowerCase()));
+        (a, b) => a.title.toLowerCase().compareTo(b.title.toLowerCase()),
+      );
 
-      // -----------------------------
-      // 2) DOCS favoritos (Storage: docs/**) ✅ ahora recursivo
-      // Primero intentamos resolverlos desde documents.files[].storagePath
-      // y dejamos el barrido de Storage como fallback legacy.
-      // -----------------------------
       final allDocRefs = await _listAllRecursive(_storage.ref(_docsFolder));
       for (final ref in allDocRefs) {
         if (_isFavDocRef(favSet, ref)) {
@@ -646,11 +645,9 @@ class _UserProfileScreenState extends State<UserProfileScreen>
         );
       }
 
-      // -----------------------------
-      // 3) VIDEOS favoritos (tu lógica actual)
-      // -----------------------------
       final vSnap = await _db.collection('videos').get();
       final List<FavVideo> vids = [];
+
       for (final d in vSnap.docs) {
         final data = d.data();
         final rawYt = _extractYoutubeRaw(data);
@@ -677,12 +674,14 @@ class _UserProfileScreenState extends State<UserProfileScreen>
       }
 
       if (!mounted) return;
+
       setState(() {
-        _favBundles = bundles; // ✅ NUEVO
+        _favBundles = bundles;
         _favDocs = docs;
         _favVideos = vids;
         _loadingFavs = false;
       });
+
       if (kDebugMode) {
         debugPrint('📚 Favorite docs rendered count: ${_favDocs.length}');
       }
@@ -693,11 +692,12 @@ class _UserProfileScreenState extends State<UserProfileScreen>
   }
 
   // ─────────────────────────────
-  // Descarga gated por compra (IAP)
+  // Descarga gated por compra
   // ─────────────────────────────
   Future<void> _downloadAndOpenFile(Reference ref) async {
     if (!_isPurchased(ref)) {
       if (!mounted) return;
+
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
           content: Text('Debes comprar este documento para descargarlo'),
@@ -720,6 +720,7 @@ class _UserProfileScreenState extends State<UserProfileScreen>
       await OpenFilex.open(file.path);
     } catch (e) {
       if (!mounted) return;
+
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('Error al abrir archivo: $e')),
       );
@@ -739,12 +740,18 @@ class _UserProfileScreenState extends State<UserProfileScreen>
   Future<void> _sendEmailVerification() async {
     final user = _auth.currentUser;
     if (user == null) return;
+
     try {
       await user.sendEmailVerification();
+
+      if (!mounted) return;
+
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Correo de verificación enviado')),
       );
     } catch (e) {
+      if (!mounted) return;
+
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('Error al enviar verificación: $e')),
       );
@@ -753,6 +760,7 @@ class _UserProfileScreenState extends State<UserProfileScreen>
 
   Future<bool> _reauthWithPassword(String email) async {
     final passCtrl = TextEditingController();
+
     final ok = await showDialog<bool>(
       context: context,
       builder: (_) => AlertDialog(
@@ -785,7 +793,10 @@ class _UserProfileScreenState extends State<UserProfileScreen>
       ),
     );
 
-    if (ok != true) return false;
+    if (ok != true) {
+      passCtrl.dispose();
+      return false;
+    }
 
     try {
       final user = _auth.currentUser!;
@@ -793,6 +804,7 @@ class _UserProfileScreenState extends State<UserProfileScreen>
         email: email,
         password: passCtrl.text.trim(),
       );
+
       await user.reauthenticateWithCredential(cred);
       return true;
     } catch (e) {
@@ -802,6 +814,8 @@ class _UserProfileScreenState extends State<UserProfileScreen>
         );
       }
       return false;
+    } finally {
+      passCtrl.dispose();
     }
   }
 
@@ -810,6 +824,7 @@ class _UserProfileScreenState extends State<UserProfileScreen>
     if (user == null) return;
 
     setState(() => _saving = true);
+
     try {
       final currentEmail = user.email ?? '';
       final newEmail = _emailCtrl.text.trim();
@@ -823,6 +838,7 @@ class _UserProfileScreenState extends State<UserProfileScreen>
             final ok = await _reauthWithPassword(
               currentEmail.isNotEmpty ? currentEmail : newEmail,
             );
+
             if (ok) {
               await user.updateEmail(newEmail);
               await _reloadAuthUser();
@@ -838,6 +854,7 @@ class _UserProfileScreenState extends State<UserProfileScreen>
                 ),
               );
             }
+
             if (mounted) setState(() => _saving = false);
             return;
           }
@@ -862,6 +879,7 @@ class _UserProfileScreenState extends State<UserProfileScreen>
 
       if (mounted) {
         setState(() => _editing = false);
+
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text('Perfil guardado')),
         );
@@ -879,13 +897,17 @@ class _UserProfileScreenState extends State<UserProfileScreen>
 
   Future<void> _signOut() async {
     setState(() => _signingOut = true);
+
     try {
       await _auth.signOut();
+
       if (!mounted) return;
+
       Navigator.of(context, rootNavigator: true)
           .pushNamedAndRemoveUntil('/', (route) => false);
     } catch (e) {
       if (!mounted) return;
+
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('No se pudo cerrar sesión: $e')),
       );
@@ -916,7 +938,8 @@ class _UserProfileScreenState extends State<UserProfileScreen>
               foregroundColor: CapColors.text,
               padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
               shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(10)),
+                borderRadius: BorderRadius.circular(10),
+              ),
             ),
             onPressed: () => Navigator.pop(context, false),
             child: const Text('Cancelar'),
@@ -927,7 +950,8 @@ class _UserProfileScreenState extends State<UserProfileScreen>
               foregroundColor: Colors.black,
               padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
               shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(10)),
+                borderRadius: BorderRadius.circular(10),
+              ),
             ),
             onPressed: () => Navigator.pop(context, true),
             icon: const Icon(Icons.logout),
@@ -938,6 +962,360 @@ class _UserProfileScreenState extends State<UserProfileScreen>
     );
 
     if (ok == true) await _signOut();
+  }
+
+  // ─────────────────────────────
+  // Eliminación de cuenta para cumplimiento Apple 5.1.1(v)
+  // ─────────────────────────────
+  Future<bool> _reauthForAccountDeletion(String email) async {
+    final passCtrl = TextEditingController();
+
+    final ok = await showDialog<bool>(
+      context: context,
+      barrierDismissible: false,
+      builder: (_) => AlertDialog(
+        backgroundColor: CapColors.surface,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+        title: const Text(
+          'Confirmar identidad',
+          style: TextStyle(
+            color: CapColors.text,
+            fontWeight: FontWeight.w800,
+          ),
+        ),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Text(
+              'Por seguridad, ingresa tu contraseña para eliminar tu cuenta.',
+              style: TextStyle(color: CapColors.textMuted),
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: passCtrl,
+              obscureText: true,
+              style: const TextStyle(color: CapColors.text),
+              decoration: const InputDecoration(
+                labelText: 'Contraseña',
+                labelStyle: TextStyle(color: CapColors.textMuted),
+                border: OutlineInputBorder(),
+              ),
+            ),
+          ],
+        ),
+        actionsPadding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancelar'),
+          ),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(
+              backgroundColor: CapColors.gold,
+              foregroundColor: Colors.black,
+            ),
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Continuar'),
+          ),
+        ],
+      ),
+    );
+
+    if (ok != true) {
+      passCtrl.dispose();
+      return false;
+    }
+
+    try {
+      final user = _auth.currentUser;
+      if (user == null) return false;
+
+      final password = passCtrl.text.trim();
+
+      if (password.isEmpty) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Ingresa tu contraseña.')),
+          );
+        }
+        return false;
+      }
+
+      final cred = EmailAuthProvider.credential(
+        email: email,
+        password: password,
+      );
+
+      await user.reauthenticateWithCredential(cred);
+      return true;
+    } on FirebaseAuthException catch (e) {
+      if (!mounted) return false;
+
+      String msg = 'No se pudo confirmar tu identidad.';
+
+      if (e.code == 'wrong-password' || e.code == 'invalid-credential') {
+        msg = 'La contraseña no es correcta.';
+      } else if (e.code == 'too-many-requests') {
+        msg = 'Demasiados intentos. Intenta más tarde.';
+      } else if (e.code == 'user-mismatch') {
+        msg = 'La cuenta no coincide con el usuario actual.';
+      }
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(msg)),
+      );
+
+      return false;
+    } catch (e) {
+      if (!mounted) return false;
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Error al confirmar identidad: $e')),
+      );
+
+      return false;
+    } finally {
+      passCtrl.dispose();
+    }
+  }
+
+  Future<void> _deleteQueryInBatches(Query<Map<String, dynamic>> query) async {
+    while (true) {
+      final snap = await query.limit(450).get();
+      if (snap.docs.isEmpty) break;
+
+      final batch = _db.batch();
+
+      for (final doc in snap.docs) {
+        batch.delete(doc.reference);
+      }
+
+      await batch.commit();
+
+      if (snap.docs.length < 450) break;
+    }
+  }
+
+  Future<void> _deleteStorageFolder(String path) async {
+    try {
+      final refs = await _listAllRecursive(_storage.ref(path));
+
+      for (final ref in refs) {
+        try {
+          await ref.delete();
+        } catch (_) {}
+      }
+    } catch (_) {}
+  }
+
+  // SOFT DELETE: marca usuario como eliminado sin borrar datos
+  // Permite que restaurar compras (IAP nativo) siga funcionando
+  // si el usuario crea nueva cuenta con el mismo email
+  Future<void> _deleteUserKnownData(String uid) async {
+    try {
+      await _db.collection('users').doc(uid).update({
+        'status': 'deleted',
+        'deletedAt': FieldValue.serverTimestamp(),
+        'name': '[Cuenta eliminada]',
+        'email': '',
+        'phone': '',
+        'city': '',
+        'photoUrl': null,
+      });
+
+      debugPrint('✅ Usuario marcado como eliminado: $uid');
+
+      // Borrar solo la foto de perfil del Storage
+      try {
+        await _storage.ref('users/$uid/profile.jpg').delete();
+      } catch (e) {
+        debugPrint('⚠️ Error borrando foto: $e');
+      }
+    } catch (e) {
+      debugPrint('❌ Error en soft delete: $e');
+      rethrow;
+    }
+  }
+
+  Future<void> _deleteAccount() async {
+    if (_deletingAccount) return;
+
+    final user = _auth.currentUser;
+    if (user == null) return;
+
+    final uid = user.uid;
+    final email = user.email ?? _emailCtrl.text.trim();
+
+    final confirmed = await showDialog<bool>(
+      context: context,
+      barrierDismissible: false,
+      builder: (_) => AlertDialog(
+        backgroundColor: CapColors.surface,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+        title: const Text(
+          'Eliminar cuenta permanentemente',
+          style: TextStyle(
+            color: CapColors.text,
+            fontWeight: FontWeight.w900,
+          ),
+        ),
+        content: const Text(
+          'Se eliminarán:\n'
+          '• Tu perfil visible\n'
+          '• Tu foto de perfil\n\n'
+          'Se conservarán tus compras para que puedas restaurarlas si creas una nueva cuenta con el mismo email.\n\n'
+          'Esta acción NO se puede deshacer.',
+          style: TextStyle(color: CapColors.textMuted),
+        ),
+        actionsPadding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
+        actions: [
+          OutlinedButton(
+            style: OutlinedButton.styleFrom(
+              side: const BorderSide(color: Colors.white24),
+              foregroundColor: CapColors.text,
+            ),
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancelar'),
+          ),
+          ElevatedButton.icon(
+            style: ElevatedButton.styleFrom(
+              backgroundColor: Colors.redAccent,
+              foregroundColor: Colors.white,
+            ),
+            onPressed: () => Navigator.pop(context, true),
+            icon: const Icon(Icons.delete_forever),
+            label: const Text('Eliminar cuenta'),
+          ),
+        ],
+      ),
+    );
+
+    if (confirmed != true) return;
+
+    setState(() => _deletingAccount = true);
+
+    try {
+      final usesPasswordProvider =
+          user.providerData.any((p) => p.providerId == 'password');
+
+      if (usesPasswordProvider && email.isNotEmpty) {
+        final reauthOk = await _reauthForAccountDeletion(email);
+        if (!reauthOk) {
+          if (mounted) setState(() => _deletingAccount = false);
+          return;
+        }
+      }
+
+      // 1️⃣ Soft delete en Firestore (marcar como eliminada)
+      try {
+        await _deleteUserKnownData(uid);
+      } catch (e, st) {
+        debugPrint('⚠️ Error marcando usuario como eliminado: $e\n$st');
+      }
+
+      // 2️⃣ Borrar usuario de Auth (libera email para nueva cuenta)
+      try {
+        await _auth.currentUser?.delete();
+        debugPrint('✅ Usuario borrado de Auth: $uid');
+      } on FirebaseAuthException catch (e) {
+        if (e.code == 'requires-recent-login' && email.isNotEmpty) {
+          final reauthOk = await _reauthForAccountDeletion(email);
+          if (!reauthOk) {
+            if (mounted) setState(() => _deletingAccount = false);
+            return;
+          }
+          await _auth.currentUser?.delete();
+          debugPrint('✅ Usuario borrado de Auth (reauth): $uid');
+        } else {
+          rethrow;
+        }
+      }
+
+      // 3️⃣ Sign out
+      await _auth.signOut();
+
+      if (!mounted) return;
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+            'Tu cuenta fue eliminada correctamente.\n\n'
+            'Puedes crear una nueva con el mismo email y restaurar tus compras.',
+          ),
+          duration: Duration(seconds: 4),
+        ),
+      );
+
+      Navigator.of(context, rootNavigator: true)
+          .pushNamedAndRemoveUntil('/', (route) => false);
+    } on FirebaseAuthException catch (e) {
+      if (!mounted) return;
+
+      String msg = 'No se pudo eliminar la cuenta.';
+
+      if (e.code == 'requires-recent-login') {
+        msg =
+            'Por seguridad, vuelve a iniciar sesión e intenta eliminar la cuenta nuevamente.';
+      }
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(msg)),
+      );
+    } catch (e) {
+      if (!mounted) return;
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Error al eliminar cuenta: $e')),
+      );
+    } finally {
+      if (mounted) setState(() => _deletingAccount = false);
+    }
+  }
+
+  Future<void> _confirmDeleteAccount() async {
+    final ok = await showDialog<bool>(
+      context: context,
+      barrierDismissible: false,
+      builder: (_) => AlertDialog(
+        backgroundColor: CapColors.surface,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+        title: const Text(
+          'Eliminar cuenta',
+          style: TextStyle(
+            color: CapColors.text,
+            fontWeight: FontWeight.w900,
+          ),
+        ),
+        content: const Text(
+          'Esta acción eliminará tu cuenta y los datos asociados a tu perfil. No se puede deshacer.\n\n¿Deseas continuar?',
+          style: TextStyle(color: CapColors.textMuted),
+        ),
+        actionsPadding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
+        actions: [
+          OutlinedButton(
+            style: OutlinedButton.styleFrom(
+              side: const BorderSide(color: Colors.white24),
+              foregroundColor: CapColors.text,
+            ),
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancelar'),
+          ),
+          ElevatedButton.icon(
+            style: ElevatedButton.styleFrom(
+              backgroundColor: Colors.redAccent,
+              foregroundColor: Colors.white,
+            ),
+            onPressed: () => Navigator.pop(context, true),
+            icon: const Icon(Icons.delete_forever),
+            label: const Text('Eliminar cuenta'),
+          ),
+        ],
+      ),
+    );
+
+    if (ok == true) {
+      await _deleteAccount();
+    }
   }
 
   // ─────────────────────────────
@@ -968,6 +1346,7 @@ class _UserProfileScreenState extends State<UserProfileScreen>
 
     if (result == 'view') {
       if (_photoUrl == null) return;
+
       showDialog(
         context: context,
         builder: (_) => Dialog(
@@ -1218,7 +1597,6 @@ class _UserProfileScreenState extends State<UserProfileScreen>
                                       )
                                     ],
                                   ),
-                                  // ✅ icono negro (visible)
                                   child: const Icon(
                                     Icons.edit,
                                     size: 18,
@@ -1270,7 +1648,8 @@ class _UserProfileScreenState extends State<UserProfileScreen>
                               child: OutlinedButton.icon(
                                 style: OutlinedButton.styleFrom(
                                   side: const BorderSide(
-                                      color: CapColors.goldDark),
+                                    color: CapColors.goldDark,
+                                  ),
                                   foregroundColor: CapColors.gold,
                                   backgroundColor: CapColors.surface,
                                 ),
@@ -1333,7 +1712,9 @@ class _UserProfileScreenState extends State<UserProfileScreen>
                       ),
                     ),
                     _infoRow(
-                        label: 'MIEMBRO DESDE', value: _fmtDate(_createdAt)),
+                      label: 'MIEMBRO DESDE',
+                      value: _fmtDate(_createdAt),
+                    ),
                     _infoRow(
                       label: 'DOCUMENTOS COMPRADOS',
                       value: _purchasedProductIds.length.toString(),
@@ -1345,8 +1726,9 @@ class _UserProfileScreenState extends State<UserProfileScreen>
                           Expanded(
                             child: OutlinedButton(
                               style: OutlinedButton.styleFrom(
-                                side:
-                                    const BorderSide(color: CapColors.goldDark),
+                                side: const BorderSide(
+                                  color: CapColors.goldDark,
+                                ),
                                 foregroundColor: CapColors.gold,
                                 padding:
                                     const EdgeInsets.symmetric(vertical: 12),
@@ -1366,7 +1748,8 @@ class _UserProfileScreenState extends State<UserProfileScreen>
                                   : const Text(
                                       'Restaurar compras',
                                       style: TextStyle(
-                                          fontWeight: FontWeight.w800),
+                                        fontWeight: FontWeight.w800,
+                                      ),
                                     ),
                             ),
                           ),
@@ -1391,6 +1774,88 @@ class _UserProfileScreenState extends State<UserProfileScreen>
                             ),
                           ),
                         ],
+                      ),
+                    ),
+
+                    // ===== Cuenta / eliminación requerida por Apple =====
+                    Padding(
+                      padding: const EdgeInsets.fromLTRB(16, 18, 16, 6),
+                      child: Text(
+                        'CUENTA',
+                        style:
+                            Theme.of(context).textTheme.titleMedium?.copyWith(
+                                  color: CapColors.gold,
+                                  fontWeight: FontWeight.w800,
+                                ),
+                      ),
+                    ),
+                    Padding(
+                      padding: const EdgeInsets.fromLTRB(16, 4, 16, 12),
+                      child: Container(
+                        padding: const EdgeInsets.all(14),
+                        decoration: BoxDecoration(
+                          color: CapColors.surface,
+                          borderRadius: BorderRadius.circular(12),
+                          border: Border.all(
+                            color: Colors.redAccent.withOpacity(.45),
+                          ),
+                        ),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.stretch,
+                          children: [
+                            const Text(
+                              'Eliminar cuenta',
+                              style: TextStyle(
+                                color: CapColors.text,
+                                fontWeight: FontWeight.w900,
+                                fontSize: 16,
+                              ),
+                            ),
+                            const SizedBox(height: 6),
+                            const Text(
+                              'Puedes eliminar tu cuenta y los datos asociados a tu perfil. Esta acción no se puede deshacer.',
+                              style: TextStyle(
+                                color: CapColors.textMuted,
+                                height: 1.35,
+                              ),
+                            ),
+                            const SizedBox(height: 12),
+                            OutlinedButton.icon(
+                              style: OutlinedButton.styleFrom(
+                                foregroundColor: Colors.redAccent,
+                                side: const BorderSide(
+                                  color: Colors.redAccent,
+                                ),
+                                padding:
+                                    const EdgeInsets.symmetric(vertical: 12),
+                                shape: RoundedRectangleBorder(
+                                  borderRadius: BorderRadius.circular(10),
+                                ),
+                              ),
+                              onPressed: _deletingAccount
+                                  ? null
+                                  : _confirmDeleteAccount,
+                              icon: _deletingAccount
+                                  ? const SizedBox(
+                                      width: 16,
+                                      height: 16,
+                                      child: CircularProgressIndicator(
+                                        strokeWidth: 2,
+                                        color: Colors.redAccent,
+                                      ),
+                                    )
+                                  : const Icon(Icons.delete_forever),
+                              label: Text(
+                                _deletingAccount
+                                    ? 'Eliminando cuenta...'
+                                    : 'Eliminar mi cuenta',
+                                style: const TextStyle(
+                                  fontWeight: FontWeight.w900,
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
                       ),
                     ),
 
@@ -1431,13 +1896,16 @@ class _UserProfileScreenState extends State<UserProfileScreen>
                                   ),
                                 )
                               : SizedBox(
-                                  height:
-                                      170, // ✅ más alto para evitar overflow
+                                  height: 170,
                                   child: ListView.separated(
                                     scrollDirection: Axis.horizontal,
                                     physics: const BouncingScrollPhysics(),
-                                    padding:
-                                        const EdgeInsets.fromLTRB(8, 8, 8, 12),
+                                    padding: const EdgeInsets.fromLTRB(
+                                      8,
+                                      8,
+                                      8,
+                                      12,
+                                    ),
                                     itemCount: _favBundles.length,
                                     separatorBuilder: (_, __) =>
                                         const SizedBox(width: 10),
@@ -1456,14 +1924,14 @@ class _UserProfileScreenState extends State<UserProfileScreen>
                                           borderRadius:
                                               BorderRadius.circular(14),
                                           child: Container(
-                                            padding: const EdgeInsets.all(
-                                                10), // ✅ menos padding
+                                            padding: const EdgeInsets.all(10),
                                             decoration: BoxDecoration(
                                               color: CapColors.surfaceAlt,
                                               borderRadius:
                                                   BorderRadius.circular(14),
                                               border: Border.all(
-                                                  color: Colors.white12),
+                                                color: Colors.white12,
+                                              ),
                                             ),
                                             child: Column(
                                               crossAxisAlignment:
@@ -1472,11 +1940,9 @@ class _UserProfileScreenState extends State<UserProfileScreen>
                                                 const Icon(
                                                   Icons.folder_zip_rounded,
                                                   color: CapColors.gold,
-                                                  size: 24, // ✅ icon más chico
+                                                  size: 24,
                                                 ),
                                                 const SizedBox(height: 6),
-
-                                                // ✅ CLAVE: esto hace que el layout “encaje” siempre
                                                 Expanded(
                                                   child: Text(
                                                     b.title,
@@ -1490,7 +1956,6 @@ class _UserProfileScreenState extends State<UserProfileScreen>
                                                     ),
                                                   ),
                                                 ),
-
                                                 const SizedBox(height: 4),
                                                 Text(
                                                   '${b.filesCount} archivo(s)',
@@ -1530,13 +1995,18 @@ class _UserProfileScreenState extends State<UserProfileScreen>
                                   child: ListView.separated(
                                     scrollDirection: Axis.horizontal,
                                     physics: const BouncingScrollPhysics(),
-                                    padding:
-                                        const EdgeInsets.fromLTRB(8, 8, 8, 12),
+                                    padding: const EdgeInsets.fromLTRB(
+                                      8,
+                                      8,
+                                      8,
+                                      12,
+                                    ),
                                     itemCount: _favDocs.length,
                                     separatorBuilder: (_, __) =>
                                         const SizedBox(width: 10),
                                     itemBuilder: (ctx, i) {
                                       final ref = _favDocs[i];
+
                                       return SizedBox(
                                         width: 150,
                                         child: DocTile(
@@ -1576,12 +2046,17 @@ class _UserProfileScreenState extends State<UserProfileScreen>
                                         scrollDirection: Axis.horizontal,
                                         physics: const BouncingScrollPhysics(),
                                         padding: const EdgeInsets.fromLTRB(
-                                            8, 8, 8, 12),
+                                          8,
+                                          8,
+                                          8,
+                                          12,
+                                        ),
                                         itemCount: _favVideos.length,
                                         separatorBuilder: (_, __) =>
                                             const SizedBox(width: 10),
                                         itemBuilder: (ctx, i) {
                                           final v = _favVideos[i];
+
                                           return SizedBox(
                                             width: cardWidth,
                                             child: VideoTile(

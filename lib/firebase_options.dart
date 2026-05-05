@@ -24,10 +24,7 @@ class DefaultFirebaseOptions {
     }
     switch (defaultTargetPlatform) {
       case TargetPlatform.android:
-        throw UnsupportedError(
-          'DefaultFirebaseOptions have not been configured for android - '
-          'you can reconfigure this by running the FlutterFire CLI again.',
-        );
+        return android;
       case TargetPlatform.iOS:
         return ios;
       case TargetPlatform.macOS:
@@ -60,4 +57,13 @@ class DefaultFirebaseOptions {
     storageBucket: 'capfiscal-biblioteca-app.firebasestorage.app',
     iosBundleId: 'com.capfiscal.biblioteca',
   );
+
+  static const FirebaseOptions android = FirebaseOptions(
+    apiKey: 'AIzaSyA4ilzkQtfMT8oZW-b1JUYKXt65E9IDYPo',
+    appId: '1:518204584684:android:194e7967e6631be0396bc9',
+    messagingSenderId: '518204584684',
+    projectId: 'capfiscal-biblioteca-app',
+    storageBucket: 'capfiscal-biblioteca-app.firebasestorage.app',
+  );
+
 }
