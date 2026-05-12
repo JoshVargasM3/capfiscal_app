@@ -480,8 +480,8 @@ class _HomeScreenState extends State<HomeScreen> {
                           width: itemWidth,
                           icon: Icons.favorite_rounded,
                           label: 'Favoritos',
-                          onTap: () =>
-                              Navigator.pushReplacementNamed(context, '/perfil'),
+                          onTap: () => Navigator.pushReplacementNamed(
+                              context, '/perfil'),
                         ),
                       ],
                     );

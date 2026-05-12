@@ -152,8 +152,8 @@ class _EmailVerificationScreenState extends State<EmailVerificationScreen>
                       Text(
                         'Te enviamos un enlace de verificación a:\n$email\n\n'
                         'Revisa tu bandeja de entrada, y también la carpeta de '
-                        'spam o correo no deseado, porque muchas veces '
-                        'llega allí. Cuando lo verifiques, esta pantalla '
+                        'spam o correo no deseado, en caso de que no lo veas inmediatamente.'
+                        'Cuando lo verifiques, esta pantalla '
                         'se actualizará automáticamente.',
                         textAlign: TextAlign.center,
                         style: const TextStyle(
